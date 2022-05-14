@@ -19,6 +19,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -116,6 +117,7 @@ func (router *Router) setup() {
 	router.mux.Handle("/nextup", router.nextup()).Methods("GET")
 	router.mux.Handle("/categories", router.categories()).Methods("GET")
 	router.mux.Handle("/categories/{category}", router.category()).Methods("GET")
+	router.mux.Handle("/talk/{id}", router.talk()).Methods("GET")
 	router.mux.Handle("/submit", router.submit()).Methods("GET")
 	router.mux.Handle("/submit", router.accept()).Methods("POST")
 	router.mux.Handle("/verify/{secret}", router.confirm()).Methods("GET")
@@ -125,7 +127,7 @@ func (router *Router) setup() {
 	router.mux.Handle("/legal", router.legal()).Methods("GET")
 	// parse templates
 	router.templates = make(map[string]*template.Template)
-	for _, t := range []string{"template/categories.html", "template/submit.html", "template/top.html", "template/confirm.html", "template/legal.html"} {
+	for _, t := range []string{"template/categories.html", "template/submit.html", "template/top.html", "template/confirm.html", "template/legal.html", "template/talk.html"} {
 		router.templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(templateFuncs).ParseFS(webTemplates, "template/base.html", t))
 	}
 }
@@ -188,6 +190,35 @@ func (router *Router) legal() http.Handler {
 	})
 }
 
+func (router *Router) talk() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+		if err != nil {
+			http.Error(w, "invalid talk id", http.StatusBadRequest)
+			return
+		}
+		talk, err := router.store.Talk(id)
+		if err != nil {
+			http.Error(w, "could not fetch talk", http.StatusInternalServerError)
+			logrus.WithError(err).Error("Failed to fetch talk")
+			return
+		} else if talk == nil {
+			http.Error(w, "talk not found", http.StatusNotFound)
+			return
+		}
+		ctx := struct {
+			Talk *Talk
+		}{
+			talk,
+		}
+		if err := router.templates["talk.html"].Execute(w, &ctx); err != nil {
+			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
+		}
+	})
+}
+
 func (router *Router) accept() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Parse form data
@@ -207,13 +238,15 @@ func (router *Router) accept() http.Handler {
 			http.Error(w, "title not valid", http.StatusBadRequest)
 			return
 		}
-		// Verify that link is valid URL and has http scheme
+		// Verify that either link is valid URL and has http scheme OR description is not empty
+		body := strings.Join(r.Form["body"], "")
+		hasLink := r.Form.Has("url")
 		link, err := url.Parse(strings.Join(r.Form["url"], ""))
-		if err != nil {
+		if hasLink && err != nil {
 			http.Error(w, "link not valid", http.StatusBadRequest)
 			return
 		}
-		if !linkSchemeRegex.MatchString(link.Scheme) {
+		if hasLink && !linkSchemeRegex.MatchString(link.Scheme) {
 			http.Error(w, "link must be http or https", http.StatusBadRequest)
 			return
 		}
@@ -241,14 +274,27 @@ func (router *Router) accept() http.Handler {
 			http.Error(w, "date has to be in the future", http.StatusBadRequest)
 			return
 		}
+		// Check if there are any open verifications for this user
+		if ok, err := router.store.HasActiveVerification(user); err != nil {
+			http.Error(w, "failed to check verifications", http.StatusInternalServerError)
+			return
+		} else if ok {
+			http.Error(w, "user has active verifications", http.StatusForbidden)
+			return
+		}
+		// Generate link string
+		linkString := ""
+		if link != nil {
+			linkString = link.String()
+		}
 		// Generate talk object and add to talk store
-		// TODO(lnsp): Make sure that we can't create a new verification UNLESS all other ones are either expired or verified
 		talk := &Talk{
 			User:     user,
 			Title:    title,
 			Category: category,
 			Date:     date,
-			Link:     link.String(),
+			Link:     linkString,
+			Body:     body,
 		}
 		secret, err := router.store.Add(talk)
 		if err != nil {
@@ -286,7 +332,7 @@ func (router *Router) top() http.Handler {
 		sort.Slice(talks, func(i, j int) bool { return talks[i].Rank < talks[j].Rank })
 
 		context := struct {
-			Talks []Talk
+			Talks []*Talk
 		}{
 			talks,
 		}
@@ -309,7 +355,7 @@ func (router *Router) nextup() http.Handler {
 
 		// Put into top context
 		context := struct {
-			Talks []Talk
+			Talks []*Talk
 		}{
 			talks,
 		}
@@ -372,7 +418,7 @@ func (router *Router) category() http.Handler {
 
 		context := struct {
 			Category string
-			Talks    []Talk
+			Talks    []*Talk
 		}{
 			Category: category,
 			Talks:    talks,
@@ -415,13 +461,14 @@ func (v *Verification) Active() bool {
 }
 
 type Talk struct {
-	ID       int64     `json:"i"`
+	ID       int64     `json:"i,omitempty"`
 	Rank     int64     `json:"-"`
 	User     string    `json:"u"`
 	Title    string    `json:"t"`
 	Category string    `json:"c"`
 	Date     time.Time `json:"d"`
-	Link     string    `json:"l"`
+	Link     string    `json:"l,omitempty"`
+	Body     string    `json:"b,omitempty"`
 }
 
 type KVCreds struct {
@@ -483,9 +530,10 @@ func (mp *MailProvider) SendVerification(user, link string, talk *Talk) error {
 type TalkStore struct {
 	creds *KVCreds
 
-	mu    sync.Mutex
-	cache []Talk
-	hash  []byte
+	mu       sync.Mutex
+	cache    []*Talk
+	cachemap map[int64]*Talk
+	hash     []byte
 }
 
 func NewTalkStore(creds *KVCreds) *TalkStore {
@@ -625,12 +673,6 @@ func (store *TalkStore) HasActiveVerification(user string) (bool, error) {
 }
 
 func (store *TalkStore) Add(talk *Talk) (string, error) {
-	// Check if there are any open verifications for this user
-	if ok, err := store.HasActiveVerification(talk.User); err != nil {
-		return "", fmt.Errorf("has active verification: %w", err)
-	} else if ok {
-		return "", fmt.Errorf("user has active verification")
-	}
 	// Generate secret
 	randBytes := make([]byte, secretLength)
 	rand.Reader.Read(randBytes)
@@ -700,7 +742,7 @@ func (store *TalkStore) Verify(secret string) error {
 	return nil
 }
 
-func (store *TalkStore) Talks() ([]Talk, error) {
+func (store *TalkStore) Talk(id int64) (*Talk, error) {
 	// List talks
 	talkkeys, hash, err := store.list(store.creds.Prefix + "_talks_")
 	if err != nil {
@@ -710,10 +752,20 @@ func (store *TalkStore) Talks() ([]Talk, error) {
 	// Compute hash before parsing, compare with current one
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if bytes.Equal(hash[:], store.hash) {
-		return store.cache, nil
+	if bytes.Equal(hash, store.hash) {
+		return store.cachemap[id], nil
 	}
 
+	// Else update cache
+	if err := store.updateCache(talkkeys, hash); err != nil {
+		return nil, fmt.Errorf("update cache: %w", err)
+	}
+
+	return store.cachemap[id], nil
+}
+
+// mu must be held before calling
+func (store *TalkStore) updateCache(keys []string, hash []byte) error {
 	// Generate list of kept talks
 	cached := make(map[string]int)
 	for i := range store.cache {
@@ -722,8 +774,9 @@ func (store *TalkStore) Talks() ([]Talk, error) {
 	}
 
 	// Go through each key and fetch talk
-	talks := make([]Talk, len(talkkeys))
-	for i, key := range talkkeys {
+	talks := make([]*Talk, len(keys))
+	talkmap := make(map[int64]*Talk)
+	for i, key := range keys {
 		if j, ok := cached[key]; ok {
 			// Copy over from cache
 			talks[i] = store.cache[j]
@@ -732,18 +785,49 @@ func (store *TalkStore) Talks() ([]Talk, error) {
 			// Fetch new talk
 			talkdata, err := store.fetch(key)
 			if err != nil {
-				return nil, fmt.Errorf("fetch talk list: %w", err)
+				return fmt.Errorf("fetch talk list: %w", err)
 			}
-			if err := json.Unmarshal(talkdata, &talks[i]); err != nil {
-				return nil, fmt.Errorf("parse talk: %w", err)
+			talks[i] = &Talk{}
+			if err := json.Unmarshal(talkdata, talks[i]); err != nil {
+				return fmt.Errorf("parse talk: %w", err)
 			}
 		}
 		// TODO(lnsp): Compute talk scores and ranks
 		talks[i].Rank = int64(i + 1)
+		talkmap[talks[i].ID] = talks[i]
 	}
 
 	// Update cache and hash
-	store.hash = hash[:]
+	store.hash = hash
 	store.cache = talks
-	return store.cache, nil
+	store.cachemap = talkmap
+	return nil
+}
+
+func (store *TalkStore) Talks() ([]*Talk, error) {
+	// List talks
+	talkkeys, hash, err := store.list(store.creds.Prefix + "_talks_")
+	if err != nil {
+		return nil, fmt.Errorf("list talks: %w", err)
+	}
+
+	// Compute hash before parsing, compare with current one
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	slice := make([]*Talk, len(store.cache))
+	copy(slice, store.cache)
+
+	if bytes.Equal(hash, store.hash) {
+		return slice, nil
+	}
+
+	// Else update cache
+	if err := store.updateCache(talkkeys, hash); err != nil {
+		return nil, fmt.Errorf("update cache: %w", err)
+	}
+
+	slice = make([]*Talk, len(store.cache))
+	copy(slice, store.cache)
+	return slice, nil
 }

@@ -17,8 +17,14 @@
     <div class="grid grid-cols-6 gap-2 my-2 border border-gray-300 text-gray-700 p-2">
       <div class="col-span-1">Title</div>
       <div class="col-span-5">{{ .Talk.Title }}</div>
+      {{ if .Link }}
       <div class="col-span-1">Link</div>
       <div class="col-span-5 font-mono">{{ .Talk.Link }}</div>
+      {{ end }}
+      {{ if .Body }}
+      <div class="col-span-1">Body</div>
+      <div class="col-span-5">{{ .Talk.Body }}</div>
+      {{ end }}
       <div class="col-span-1">Date</div>
       <div class="col-span-5">{{ .Talk.Date | humandate }}</div>
     </div>

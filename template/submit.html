@@ -4,11 +4,15 @@
   <div class="grid grid-cols-12 gap-2">
     <label for="title" class="col-span-2">Title</label>
     <div class="col-span-10">
-      <input name="title" type="text" placeholder="" class="rounded border border-black w-full max-w-md">
+      <input name="title" type="text" placeholder="" class="rounded border border-black w-full max-w-md" required>
     </div>
     <label for="url" class="col-span-2">Link</label>
     <div class="col-span-10">
       <input name="url" type="url" class="rounded border border-black w-full max-w-md" placeholder="https://in.tum.de/">
+    </div>
+    <label for="body" class="col-span-2">Text</label>
+    <div class="col-span-10">
+      <textarea name="body" rows="5" class="rounded border border-black w-full max-w-md"></textarea>
     </div>
     <label for="category" class="col-span-2 truncate">Category</label>
     <div class="col-span-10">
@@ -20,11 +24,11 @@
     </div>
     <label for="date" class="col-span-2">Date</label>
     <div class="col-span-10">
-      <input name="date" type="datetime-local" class="rounded border border-black w-full max-w-xs">
+      <input name="date" type="datetime-local" class="rounded border border-black w-full max-w-xs" required>
     </div>
     <label for="uid" class="col-span-2">TUM User ID</label>
     <div class="col-span-10">
-      <input name="uid" type="text" class="rounded border border-black w-full max-w-xs" placeholder="ga11zzz">
+      <input name="uid" type="text" class="rounded border border-black w-full max-w-xs" placeholder="ga11zzz" required>
     </div>
     <div class="col-span-full">
       <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">submit</button>

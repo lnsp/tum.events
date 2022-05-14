@@ -9,7 +9,7 @@
   <title>{{ template "title" . }}</title>
 </head>
 
-<body class="max-w-3xl mx-auto px-2">
+<body class="max-w-5xl mx-auto px-2">
   <div class="mt-2 m-auto bg-gray-100">
     <nav class="bg-blue-100 flex justify-between p-1">
       <div class="flex gap-2">
@@ -23,10 +23,9 @@
           <a href="/nextup">next up</a>
           <span>|</span>
           <a href="/categories">by category</a>
+          <span>|</span>
+          <a href="/submit">submit</a>
         </div>
-      </div>
-      <div class="inline-flex">
-        <a href="/submit" class="hover:underline">submit</a>
       </div>
     </nav>
     {{ template "content" . }}
