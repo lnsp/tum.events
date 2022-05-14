@@ -1,0 +1,19 @@
+{{ define "title" }}TUM Talks &mdash; Top{{ end }}
+{{ define "content" }}
+<div class="py-2">
+  {{ range .Talks }}
+  <div class="flex gap-2 items-center">
+    <div class="w-6 text-center">{{ .Rank }}</div>
+    <div class="flex flex-col">
+      <div class="flex items-center">
+      <a class="flex items-center hover:underline" href="{{ .Link }}">
+        {{ .Title }}
+      </a>
+      <a class="text-gray-700 text-xs ml-3 hover:underline" href="/categories/{{ .Category }}">[{{ .Category }}]</a>
+      </div>
+      <div class="">{{ .Date | humandate }}</div>
+    </div>
+  </div>
+  {{ end }}
+</div>
+{{ end }}

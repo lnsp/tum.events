@@ -1,0 +1,34 @@
+{{ define "title" }}Submit &mdash; TUM Talks{{ end }}
+{{ define "content" }}
+<form action="/submit" method="POST" class="p-2">
+  <div class="grid grid-cols-12 gap-2">
+    <label for="title" class="col-span-2">Title</label>
+    <div class="col-span-10">
+      <input name="title" type="text" placeholder="" class="rounded border border-black">
+    </div>
+    <label for="url" class="col-span-2">Link</label>
+    <div class="col-span-10">
+      <input name="url" type="url" class="rounded border border-black" placeholder="https://in.tum.de/">
+    </div>
+    <label for="category" class="col-span-2">Category</label>
+    <div class="col-span-10">
+      <select name="category" class="rounded border border-black">
+        {{ range .Categories }}
+        <option value="{{ . }}">{{ . }}</option>
+        {{ end }}
+      </select>
+    </div>
+    <label for="date" class="col-span-2">Date</label>
+    <div class="col-span-10">
+      <input name="date" type="datetime-local" class="rounded border border-black">
+    </div>
+    <label for="uid" class="col-span-2">TUM User ID</label>
+    <div class="col-span-10">
+      <input name="uid" type="text" class="rounded border border-black" placeholder="ga11zzz">
+    </div>
+    <div class="col-span-full">
+      <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">submit</button>
+    </div>
+  </div>
+</form>
+{{ end }}
