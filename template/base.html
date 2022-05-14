@@ -4,17 +4,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" type="image/png" href="/favicon.png">
   <title>{{ template "title" . }}</title>
 </head>
 
-<body>
-  <div class="max-w-3xl mt-2 m-auto bg-gray-100">
+<body class="max-w-3xl mx-auto px-2">
+  <div class="mt-2 m-auto bg-gray-100">
     <nav class="bg-blue-100 flex justify-between p-1">
       <div class="flex gap-2">
         <a href="/">
           <span class="inline-block w-6 h-6 bg-blue-600 text-center text-white font-bold">T</span>
-          <span class="font-semibold">IN.TUM Talks</span>
+          <span class="font-semibold hidden sm:inline">IN.TUM Talks</span>
         </a>
         <div class="flex gap-1 whitespace-nowrap">
           <a href="/top">top</a>
@@ -29,6 +30,11 @@
       </div>
     </nav>
     {{ template "content" . }}
+  </div>
+  <div class="flex justify-center text-xs text-gray-400 gap-4 mt-4">
+    <a href="/legal" class="hover:underline">
+      disclaimer &amp; imprint
+    </a>
   </div>
 </body>
 

@@ -1,0 +1,33 @@
+project: lennart
+service: tumtalks
+build:
+    constructor: golang
+    ignore:
+        - .valar.yml
+        - .git
+        - node_modules
+    environment: []
+deployment:
+    skip: false
+    environment:
+        - key: VALAR_PROJECT
+          value: lennart
+          secret: false
+        - key: VALAR_PREFIX
+          value: tumtalks
+          secret: false
+        - key: MAIL_SENDER
+          value: IN.TUM Talks <tumtalks@noreply.valar.dev>
+          secret: false
+        - key: MAIL_DOMAIN
+          value: noreply.valar.dev
+          secret: false
+        - key: MAIL_APIKEY
+          value: Y67dLbOPakRu2VlzU4gFxNgd/YNuc+nqhGfewhHkQfdHi0bxwoRFMMTpgR6sq2I+cwj40lNkHUVl8Fg2SvH2LPV8ZjD2C1B5m0nJcc6q
+          secret: true
+        - key: MAIL_USERDOMAIN
+          value: mytum.de
+          secret: false
+        - key: ROUTER_PUBLICURL
+          value: https://lennart-tumtalks.valar.app
+          secret: false

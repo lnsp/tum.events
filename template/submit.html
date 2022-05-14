@@ -4,15 +4,15 @@
   <div class="grid grid-cols-12 gap-2">
     <label for="title" class="col-span-2">Title</label>
     <div class="col-span-10">
-      <input name="title" type="text" placeholder="" class="rounded border border-black">
+      <input name="title" type="text" placeholder="" class="rounded border border-black w-full max-w-md">
     </div>
     <label for="url" class="col-span-2">Link</label>
     <div class="col-span-10">
-      <input name="url" type="url" class="rounded border border-black" placeholder="https://in.tum.de/">
+      <input name="url" type="url" class="rounded border border-black w-full max-w-md" placeholder="https://in.tum.de/">
     </div>
-    <label for="category" class="col-span-2">Category</label>
+    <label for="category" class="col-span-2 truncate">Category</label>
     <div class="col-span-10">
-      <select name="category" class="rounded border border-black">
+      <select name="category" class="rounded border border-black w-full max-w-xs">
         {{ range .Categories }}
         <option value="{{ . }}">{{ . }}</option>
         {{ end }}
@@ -20,11 +20,11 @@
     </div>
     <label for="date" class="col-span-2">Date</label>
     <div class="col-span-10">
-      <input name="date" type="datetime-local" class="rounded border border-black">
+      <input name="date" type="datetime-local" class="rounded border border-black w-full max-w-xs">
     </div>
     <label for="uid" class="col-span-2">TUM User ID</label>
     <div class="col-span-10">
-      <input name="uid" type="text" class="rounded border border-black" placeholder="ga11zzz">
+      <input name="uid" type="text" class="rounded border border-black w-full max-w-xs" placeholder="ga11zzz">
     </div>
     <div class="col-span-full">
       <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">submit</button>

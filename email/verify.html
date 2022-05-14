@@ -1,0 +1,32 @@
+<html>
+
+<head>
+  <style>
+    {{ .Stylesheet }}
+  </style>
+</head>
+
+<body>
+  <div class="max-w-xl mx-auto mt-4">
+    <h1 class="text-xl font-bold pb-2 border-b-2 border-blue-300">Confirm your talk &mdash;
+      <span class="inline-block w-6 h-6 bg-blue-600 text-center text-white font-bold">T</span>
+      <span class="font-semibold">IN.TUM Talks</span>
+    </h1>
+    <div class="mt-2">
+    <p>You recently posted a talk to IN.TUM Talks with the following details:</p>
+    <div class="grid grid-cols-6 gap-2 my-2 border border-gray-300 text-gray-700 p-2">
+      <div class="col-span-1">Title</div>
+      <div class="col-span-5">{{ .Talk.Title }}</div>
+      <div class="col-span-1">Link</div>
+      <div class="col-span-5 font-mono">{{ .Talk.Link }}</div>
+      <div class="col-span-1">Date</div>
+      <div class="col-span-5">{{ .Talk.Date | humandate }}</div>
+    </div>
+    <p class="mt-2">To confirm your posting, please click on the following link:</p>
+    <p class=""><a href="{{ .Link }}" class="text-blue-600 font-mono font-bold">{{ .Link }}</a></p>
+    <p class="mt-6">Thank you!</p>
+    </div>
+  </div>
+</body>
+
+</html>

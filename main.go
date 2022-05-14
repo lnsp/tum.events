@@ -1,66 +1,46 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha1"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
+	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/mailgun/mailgun-go/v4"
 	"github.com/sirupsen/logrus"
+
+	_ "time/tzdata"
 )
 
+//go:embed favicon.png
+var favicon []byte
+
+//go:embed tailwind.min.css
+var tailwindStyles []byte
+
 //go:embed template/*
-var content embed.FS
+var webTemplates embed.FS
 
-func main() {
-	//	token := os.Getenv("VALAR_TOKEN")
-	//	project := os.Getenv("VALAR_PROJECT")
-	router := NewRouter()
-	router.setup()
-	server := &http.Server{
-		Addr:         ":8080",
-		ReadTimeout:  time.Minute,
-		WriteTimeout: time.Minute,
-		Handler:      router,
-	}
-	if err := server.ListenAndServe(); err != nil {
-		fmt.Fprintln(os.Stderr, "listen:", err)
-		os.Exit(1)
-	}
-}
-
-type Router struct {
-	mux *mux.Router
-
-	templates map[string]*template.Template
-}
-
-func (router *Router) setup() {
-	// setup routes
-	router.mux.Handle("/", router.top()).Methods("GET")
-	router.mux.Handle("/top", router.top()).Methods("GET")
-	router.mux.Handle("/nextup", router.nextup()).Methods("GET")
-	router.mux.Handle("/categories", router.categories()).Methods("GET")
-	router.mux.Handle("/categories/{category}", router.category()).Methods("GET")
-	router.mux.Handle("/submit", router.submit()).Methods("GET")
-	router.mux.Handle("/submit", router.accept()).Methods("POST")
-	// parse templates
-	router.templates = make(map[string]*template.Template)
-	for _, t := range []string{"template/categories.html", "template/next.html", "template/submit.html", "template/top.html"} {
-		router.templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(template.FuncMap{
-			"humandate": func(t time.Time) string {
-				return t.Format("02.01.2006 15:04")
-			},
-		}).ParseFS(content, "template/base.html", t))
-	}
-}
+//go:embed email/*
+var emailTemplates embed.FS
 
 var talkCategories = []string{
 	"software-engineering",
@@ -85,6 +65,71 @@ var talkCategories = []string{
 	"machine-learning",
 }
 
+func main() {
+	mail := NewMailProvider(&MailConfig{
+		Sender:       os.Getenv("MAIL_SENDER"),
+		SenderDomain: os.Getenv("MAIL_DOMAIN"),
+		APIKey:       os.Getenv("MAIL_APIKEY"),
+		UserDomain:   os.Getenv("MAIL_USERDOMAIN"),
+	}, emailTemplates)
+	store := NewTalkStore(&KVCreds{
+		Token:   os.Getenv("VALAR_TOKEN"),
+		Project: os.Getenv("VALAR_PROJECT"),
+		Prefix:  os.Getenv("VALAR_PREFIX"),
+	})
+	publicURL, err := url.Parse(os.Getenv("ROUTER_PUBLICURL"))
+	if err != nil {
+		logrus.WithError(err).Fatal("public url is invalid")
+	}
+	router := NewRouter(publicURL, store, mail)
+	router.setup()
+	server := &http.Server{
+		Addr:         ":8080",
+		ReadTimeout:  time.Minute,
+		WriteTimeout: time.Minute,
+		Handler:      router,
+	}
+	if err := server.ListenAndServe(); err != nil {
+		logrus.WithError(err).Fatal("listen and serve")
+	}
+}
+
+var templateFuncs = template.FuncMap{
+	"humandate": func(t time.Time) string {
+		return t.Format("02.01.2006 15:04")
+	},
+}
+
+type Router struct {
+	publicURL *url.URL
+	mux       *mux.Router
+	store     *TalkStore
+	mail      *MailProvider
+
+	templates map[string]*template.Template
+}
+
+func (router *Router) setup() {
+	// setup routes
+	router.mux.Handle("/", router.top()).Methods("GET")
+	router.mux.Handle("/top", router.top()).Methods("GET")
+	router.mux.Handle("/nextup", router.nextup()).Methods("GET")
+	router.mux.Handle("/categories", router.categories()).Methods("GET")
+	router.mux.Handle("/categories/{category}", router.category()).Methods("GET")
+	router.mux.Handle("/submit", router.submit()).Methods("GET")
+	router.mux.Handle("/submit", router.accept()).Methods("POST")
+	router.mux.Handle("/verify/{secret}", router.confirm()).Methods("GET")
+	router.mux.Handle("/verify/{secret}", router.verify()).Methods("POST")
+	router.mux.Handle("/styles.css", router.styles()).Methods("GET")
+	router.mux.Handle("/favicon.png", router.favicon()).Methods("GET")
+	router.mux.Handle("/legal", router.legal()).Methods("GET")
+	// parse templates
+	router.templates = make(map[string]*template.Template)
+	for _, t := range []string{"template/categories.html", "template/submit.html", "template/top.html", "template/confirm.html", "template/legal.html"} {
+		router.templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(templateFuncs).ParseFS(webTemplates, "template/base.html", t))
+	}
+}
+
 func (router *Router) submit() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		context := struct{ Categories []string }{talkCategories}
@@ -94,21 +139,160 @@ func (router *Router) submit() http.Handler {
 	})
 }
 
+var userRegex = regexp.MustCompile(`^[a-z]{2}[0-9]{2}[a-z]{3}$`)
+var titleRegex = regexp.MustCompile(`^[\d\s\w?!:]{10,128}$`)
+var linkSchemeRegex = regexp.MustCompile(`^http(s)?$`)
+
+const localTimeFormat = "2006-01-02T15:04"
+
+func (router *Router) confirm() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := router.templates["confirm.html"].Execute(w, &struct{ Talk bool }{true}); err != nil {
+			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
+		}
+	})
+}
+
+func (router *Router) verify() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secret := mux.Vars(r)["secret"]
+		if err := router.store.Verify(secret); err != nil {
+			http.Error(w, "could not verify talk", http.StatusConflict)
+			return
+		}
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
+}
+
+func (router *Router) styles() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css")
+		w.Write(tailwindStyles)
+	})
+}
+
+func (router *Router) favicon() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(favicon)
+	})
+}
+
+func (router *Router) legal() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := router.templates["legal.html"].Execute(w, nil); err != nil {
+			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
+		}
+	})
+}
+
 func (router *Router) accept() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
+		// Parse form data
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "could not parse form", http.StatusBadRequest)
+			return
+		}
+		// Verify items one by one
+		user := strings.Join(r.Form["uid"], "")
+		if !userRegex.MatchString(user) {
+			http.Error(w, "user not valid", http.StatusBadRequest)
+			return
+		}
+		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
+		title := strings.Join(r.Form["title"], "")
+		if len(strings.TrimSpace(title)) < 10 || !titleRegex.MatchString(title) {
+			http.Error(w, "title not valid", http.StatusBadRequest)
+			return
+		}
+		// Verify that link is valid URL and has http scheme
+		link, err := url.Parse(strings.Join(r.Form["url"], ""))
+		if err != nil {
+			http.Error(w, "link not valid", http.StatusBadRequest)
+			return
+		}
+		if !linkSchemeRegex.MatchString(link.Scheme) {
+			http.Error(w, "link must be http or https", http.StatusBadRequest)
+			return
+		}
+		// Verify that category is in categories list
+		category := strings.Join(r.Form["category"], "")
+		categoryExists := false
+		for i := range talkCategories {
+			if talkCategories[i] == category {
+				categoryExists = true
+				break
+			}
+		}
+		if !categoryExists {
+			http.Error(w, "category does not exist", http.StatusBadRequest)
+			return
+		}
+		// Verify that date is in the future
+		location, _ := time.LoadLocation("Europe/Berlin")
+		date, err := time.ParseInLocation(localTimeFormat, strings.Join(r.Form["date"], ""), location)
+		if err != nil {
+			http.Error(w, "could not parse datetime", http.StatusBadRequest)
+			return
+		}
+		if time.Since(date) >= 0 {
+			http.Error(w, "date has to be in the future", http.StatusBadRequest)
+			return
+		}
+		// Generate talk object and add to talk store
+		// TODO(lnsp): Make sure that we can't create a new verification UNLESS all other ones are either expired or verified
+		talk := &Talk{
+			User:     user,
+			Title:    title,
+			Category: category,
+			Date:     date,
+			Link:     link.String(),
+		}
+		secret, err := router.store.Add(talk)
+		if err != nil {
+			http.Error(w, "could not create verification", http.StatusInternalServerError)
+			return
+		}
+		// Render verification link
+		verificationLink := &url.URL{
+			Scheme: router.publicURL.Scheme,
+			Host:   router.publicURL.Host,
+			Path:   "/verify/" + secret,
+		}
+		// Send out verification link via email
+		if err := router.mail.SendVerification(user, verificationLink.String(), talk); err != nil {
+			logrus.WithError(err).Error("Failed to send email")
+			http.Error(w, "sending verification failed", http.StatusInternalServerError)
+			return
+		}
+		// Render confirm template
+		if err := router.templates["confirm.html"].Execute(w, &struct{ Talk bool }{}); err != nil {
+			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
+		}
 	})
 }
 
 func (router *Router) top() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		talks, err := router.store.Talks()
+		if err != nil {
+			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
+			return
+		}
+		sort.Slice(talks, func(i, j int) bool { return talks[i].Rank < talks[j].Rank })
+
 		context := struct {
 			Talks []Talk
 		}{
-			FetchTalks(),
+			talks,
 		}
 		if err := router.templates["top.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
 		}
 	})
 }
@@ -116,7 +300,11 @@ func (router *Router) top() http.Handler {
 func (router *Router) nextup() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get talks sorted by date
-		talks := FetchTalks()
+		talks, err := router.store.Talks()
+		if err != nil {
+			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
+			return
+		}
 		sort.Slice(talks, func(i, j int) bool { return talks[i].Date.Before(talks[j].Date) })
 
 		// Put into top context
@@ -127,6 +315,7 @@ func (router *Router) nextup() http.Handler {
 		}
 		if err := router.templates["top.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
 		}
 	})
 }
@@ -143,6 +332,7 @@ func (router *Router) categories() http.Handler {
 		}
 		if err := router.templates["categories.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
 		}
 	})
 }
@@ -163,7 +353,11 @@ func (router *Router) category() http.Handler {
 			return
 		}
 		// Put into top context
-		talks := FetchTalks()
+		talks, err := router.store.Talks()
+		if err != nil {
+			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
+			return
+		}
 		// Filter talks by category
 		j := 0
 		for i := range talks {
@@ -185,55 +379,371 @@ func (router *Router) category() http.Handler {
 		}
 		if err := router.templates["categories.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
 		}
 	})
 }
 
-func NewRouter() *Router {
+func NewRouter(publicURL *url.URL, store *TalkStore, mail *MailProvider) *Router {
 	return &Router{
-		mux: mux.NewRouter(),
+		mux:       mux.NewRouter(),
+		publicURL: publicURL,
+		store:     store,
+		mail:      mail,
 	}
 }
+
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s := time.Now()
 	router.mux.ServeHTTP(w, r)
+	d := time.Since(s)
+
+	logrus.WithFields(logrus.Fields{
+		"duration": d,
+		"path":     r.URL.Path,
+		"method":   r.Method,
+	}).Info("Served request")
+}
+
+type Verification struct {
+	Expiration time.Time `json:"e"`
+	Talk       *Talk     `json:"t"`
+}
+
+func (v *Verification) Active() bool {
+	return time.Since(v.Expiration) < expirationInterval
 }
 
 type Talk struct {
-	Rank      int
-	Submitter string
-	Title     string
-	Category  string
-	Date      time.Time
-	Link      string
+	ID       int64     `json:"i"`
+	Rank     int64     `json:"-"`
+	User     string    `json:"u"`
+	Title    string    `json:"t"`
+	Category string    `json:"c"`
+	Date     time.Time `json:"d"`
+	Link     string    `json:"l"`
 }
 
-func FetchTalks() []Talk {
-	return []Talk{
-		{1, "ga87fey", "Test talk 1", "programming-languages", time.Now().Add(time.Hour * 24), "https://github.com"},
-		{2, "ga87fey", "Test talk 2", "programming-languages", time.Now(), "https://github.com"},
+type KVCreds struct {
+	Token   string
+	Project string
+	Prefix  string
+}
+
+type MailConfig struct {
+	Sender       string
+	SenderDomain string
+	APIKey       string
+	UserDomain   string
+}
+
+type MailProvider struct {
+	mg         mailgun.Mailgun
+	sender     string
+	template   *template.Template
+	userdomain string
+}
+
+func NewMailProvider(cfg *MailConfig, templates fs.FS) *MailProvider {
+	mg := mailgun.NewMailgun(cfg.SenderDomain, cfg.APIKey)
+	mg.SetAPIBase(mailgun.APIBaseEU)
+
+	return &MailProvider{
+		mg:         mg,
+		sender:     cfg.Sender,
+		template:   template.Must(template.New("verify.html").Funcs(templateFuncs).ParseFS(templates, "email/*.html")),
+		userdomain: cfg.UserDomain,
 	}
 }
 
-func fetch(token, project, key string) ([]Talk, error) {
-	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", project, key)
+func (mp *MailProvider) SendVerification(user, link string, talk *Talk) error {
+	emailData := struct {
+		Talk       *Talk
+		Stylesheet template.CSS
+		Link       string
+	}{
+		Talk:       talk,
+		Stylesheet: template.CSS(string(tailwindStyles)),
+		Link:       link,
+	}
+	var buf bytes.Buffer
+	if err := mp.template.Execute(&buf, &emailData); err != nil {
+		return fmt.Errorf("render template: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	message := mp.mg.NewMessage(mp.sender, "Please verify your talk - IN.TUM Talks", "", user+"@"+mp.userdomain)
+	message.SetHtml(buf.String())
+	if _, _, err := mp.mg.Send(ctx, message); err != nil {
+		return fmt.Errorf("send mail: %w", err)
+	}
+	return nil
+}
+
+type TalkStore struct {
+	creds *KVCreds
+
+	mu    sync.Mutex
+	cache []Talk
+	hash  []byte
+}
+
+func NewTalkStore(creds *KVCreds) *TalkStore {
+	return &TalkStore{
+		creds: creds,
+	}
+}
+
+func (store *TalkStore) atomicinc(key string) (int64, error) {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?op=inc&mode=atomic", store.creds.Project, key)
+	request, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return -1, err
+	}
+	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return -1, err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return -1, err
+	}
+	num := new(big.Int)
+	num.SetBytes(data)
+	return num.Int64(), nil
+}
+
+func (store *TalkStore) delete(key string) error {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.creds.Project, key)
+	request, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	return nil
+}
+
+func (store *TalkStore) put(key string, value []byte) error {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.creds.Project, key)
+	body := bytes.NewReader(value)
+	request, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	return nil
+}
+
+func (store *TalkStore) fetch(key string) ([]byte, error) {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.creds.Project, key)
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
-
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, err
 	}
-	talks := []Talk{}
-	if err := json.Unmarshal(data, talks); err != nil {
-		return nil, err
+	return data, nil
+}
+
+func (store *TalkStore) list(prefix string) ([]string, []byte, error) {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?mode=list", store.creds.Project, prefix)
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil, err
 	}
-	return talks, nil
+	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	// hash data
+	hash := sha1.Sum(data)
+	keys := []string{}
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return nil, nil, err
+	}
+	return keys, hash[:], nil
+}
+
+const expirationInterval = 15 * time.Minute
+const secretLength = 32
+
+func (store *TalkStore) HasActiveVerification(user string) (bool, error) {
+	// List all verifications
+	verifkeys, _, err := store.list(store.creds.Prefix + "_verif_")
+	if err != nil {
+		return false, fmt.Errorf("fetch verifications: %w", err)
+	}
+	// Go through each verification and check
+	for _, key := range verifkeys {
+		data, err := store.fetch(key)
+		if err != nil {
+			return false, fmt.Errorf("fetch verification: %w", err)
+		}
+		// Decode verification
+		var verification Verification
+		if err := json.Unmarshal(data, &verification); err != nil {
+			return false, fmt.Errorf("decode verification: %w", err)
+		}
+		// Drop verification if expired
+		if !verification.Active() {
+			if err := store.delete(key); err != nil {
+				return false, fmt.Errorf("delete verification: %w", err)
+			}
+		}
+		// Check if we match
+		if verification.Talk.User == user {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (store *TalkStore) Add(talk *Talk) (string, error) {
+	// Check if there are any open verifications for this user
+	if ok, err := store.HasActiveVerification(talk.User); err != nil {
+		return "", fmt.Errorf("has active verification: %w", err)
+	} else if ok {
+		return "", fmt.Errorf("user has active verification")
+	}
+	// Generate secret
+	randBytes := make([]byte, secretLength)
+	rand.Reader.Read(randBytes)
+	secret := hex.EncodeToString(randBytes)
+	// Get timestamp
+	expiration := time.Now().Add(expirationInterval)
+	// Create verification
+	verif := &Verification{
+		Expiration: expiration,
+		Talk:       talk,
+	}
+	key := fmt.Sprintf("%s_verif_%s", store.creds.Prefix, secret)
+	data, err := json.Marshal(verif)
+	if err != nil {
+		return "", fmt.Errorf("encode verification: %w", err)
+	}
+	// Store in KV
+	if err := store.put(key, data); err != nil {
+		return "", fmt.Errorf("store verification: %w", err)
+	}
+	return secret, nil
+}
+
+func (store *TalkStore) Verify(secret string) error {
+	// Attempt to decode secret and verify length
+	secretBytes, err := hex.DecodeString(secret)
+	if err != nil {
+		return fmt.Errorf("decode secret: %w", err)
+	}
+	if len(secretBytes) != secretLength {
+		return fmt.Errorf("invalid secret")
+	}
+	// Retrieve verification and decode
+	var verif Verification
+	key := fmt.Sprintf("%s_verif_%s", store.creds.Prefix, secret)
+	verifdata, err := store.fetch(key)
+	if err != nil {
+		return fmt.Errorf("fetch verification: %w", err)
+	}
+	if err := json.Unmarshal(verifdata, &verif); err != nil {
+		return fmt.Errorf("decode verification: %w", err)
+	}
+	// Check expiration time
+	if !verif.Active() {
+		return fmt.Errorf("verification expired")
+	}
+	// Delete verification from store
+	if err := store.delete(key); err != nil {
+		return fmt.Errorf("delete verification: %w", err)
+	}
+	// Generate ID for talk
+	id, err := store.atomicinc(store.creds.Prefix + "_count")
+	if err != nil {
+		return fmt.Errorf("generate id: %w", err)
+	}
+	talk := verif.Talk
+	talk.ID = id
+	// Insert talk
+	talkkey := fmt.Sprintf("%s_talks_%d", store.creds.Prefix, talk.ID)
+	talkdata, err := json.Marshal(talk)
+	if err != nil {
+		return fmt.Errorf("encode talk: %w", err)
+	}
+	if err := store.put(talkkey, talkdata); err != nil {
+		return fmt.Errorf("store talk: %w", err)
+	}
+	return nil
+}
+
+func (store *TalkStore) Talks() ([]Talk, error) {
+	// List talks
+	talkkeys, hash, err := store.list(store.creds.Prefix + "_talks_")
+	if err != nil {
+		return nil, fmt.Errorf("list talks: %w", err)
+	}
+
+	// Compute hash before parsing, compare with current one
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if bytes.Equal(hash[:], store.hash) {
+		return store.cache, nil
+	}
+
+	// Generate list of kept talks
+	cached := make(map[string]int)
+	for i := range store.cache {
+		key := fmt.Sprintf("%s_talks_%d", store.creds.Prefix, store.cache[i].ID)
+		cached[key] = i
+	}
+
+	// Go through each key and fetch talk
+	talks := make([]Talk, len(talkkeys))
+	for i, key := range talkkeys {
+		if j, ok := cached[key]; ok {
+			// Copy over from cache
+			talks[i] = store.cache[j]
+			continue
+		} else {
+			// Fetch new talk
+			talkdata, err := store.fetch(key)
+			if err != nil {
+				return nil, fmt.Errorf("fetch talk list: %w", err)
+			}
+			if err := json.Unmarshal(talkdata, &talks[i]); err != nil {
+				return nil, fmt.Errorf("parse talk: %w", err)
+			}
+		}
+		// TODO(lnsp): Compute talk scores and ranks
+		talks[i].Rank = int64(i + 1)
+	}
+
+	// Update cache and hash
+	store.hash = hash[:]
+	store.cache = talks
+	return store.cache, nil
 }

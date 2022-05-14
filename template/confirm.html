@@ -1,0 +1,13 @@
+{{ define "title" }}Confirm your post &mdash; IN.TUM Talks{{ end }}
+{{ define "content" }}
+<div class="p-2">
+  {{ if .Talk }}
+  <p>Are you sure you want to post this talk?</p>
+  <form action="" method="POST" class="mt-2">
+    <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">confirm</button>
+  </form>
+  {{ else }}
+  <p>You should receive an email with a link to verify your post. Please click on the link, else the talk posting will not be visible.</p>
+  {{ end }}
+</div>
+{{ end }}

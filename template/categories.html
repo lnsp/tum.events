@@ -1,9 +1,9 @@
-{{ define "title" }}{{ if .Category }}{{ .Category }}{{ else }}Categories{{ end }} &mdash; TUM Talks{{ end }}
+{{ define "title" }}{{ if .Category }}{{ .Category }}{{ else }}Categories{{ end }} &mdash; IN.TUM Talks{{ end }}
 {{ define "content" }}
 {{ if .Category }}
 <div class="p-2 flex flex-col gap-2">
   {{ range .Talks }}
-  <a class="flex gap-2 items-center hover:underline" href="{{ .Link }}">
+  <a class="flex gap-2 items-center hover:underline visited:text-gray-500" href="{{ .Link }}">
     <div class="text-center">{{ .Date | humandate }}</div>
     <div class="">{{ .Title }}</div>
   </a>
