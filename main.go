@@ -145,6 +145,8 @@ var userRegex = regexp.MustCompile(`^[a-z]{2}[0-9]{2}[a-z]{3}$`)
 var titleRegex = regexp.MustCompile(`^[\d\s\w?!:]{10,128}$`)
 var linkSchemeRegex = regexp.MustCompile(`^http(s)?$`)
 
+const bodyCharLimit = 10000
+
 const localTimeFormat = "2006-01-02T15:04"
 
 func (router *Router) confirm() http.Handler {
@@ -227,31 +229,35 @@ func (router *Router) accept() http.Handler {
 			return
 		}
 		// Verify items one by one
-		user := strings.Join(r.Form["uid"], "")
+		user := r.Form.Get("uid")
 		if !userRegex.MatchString(user) {
 			http.Error(w, "user not valid", http.StatusBadRequest)
 			return
 		}
 		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
-		title := strings.Join(r.Form["title"], "")
+		title := r.Form.Get("title")
 		if len(strings.TrimSpace(title)) < 10 || !titleRegex.MatchString(title) {
 			http.Error(w, "title not valid", http.StatusBadRequest)
 			return
 		}
-		// Verify that either link is valid URL and has http scheme OR description is not empty
-		body := strings.Join(r.Form["body"], "")
-		hasLink := r.Form.Has("url")
-		link, err := url.Parse(strings.Join(r.Form["url"], ""))
-		if hasLink && err != nil {
-			http.Error(w, "link not valid", http.StatusBadRequest)
+		body := r.Form.Get("body")
+		// Make sure that we don't go over the character limit
+		if len(body) > bodyCharLimit {
+			http.Error(w, "body has more than 10000 characters", http.StatusBadRequest)
 			return
 		}
-		if hasLink && !linkSchemeRegex.MatchString(link.Scheme) {
+		// Verify that either link is valid URL and has http scheme
+		link := r.Form.Get("url")
+		parsedLink, err := url.Parse(link)
+		if link != "" && err != nil {
+			http.Error(w, "link not valid", http.StatusBadRequest)
+			return
+		} else if link != "" && !linkSchemeRegex.MatchString(parsedLink.Scheme) {
 			http.Error(w, "link must be http or https", http.StatusBadRequest)
 			return
 		}
 		// Verify that category is in categories list
-		category := strings.Join(r.Form["category"], "")
+		category := r.Form.Get("category")
 		categoryExists := false
 		for i := range talkCategories {
 			if talkCategories[i] == category {
@@ -265,7 +271,7 @@ func (router *Router) accept() http.Handler {
 		}
 		// Verify that date is in the future
 		location, _ := time.LoadLocation("Europe/Berlin")
-		date, err := time.ParseInLocation(localTimeFormat, strings.Join(r.Form["date"], ""), location)
+		date, err := time.ParseInLocation(localTimeFormat, r.Form.Get("date"), location)
 		if err != nil {
 			http.Error(w, "could not parse datetime", http.StatusBadRequest)
 			return
@@ -282,18 +288,13 @@ func (router *Router) accept() http.Handler {
 			http.Error(w, "user has active verifications", http.StatusForbidden)
 			return
 		}
-		// Generate link string
-		linkString := ""
-		if link != nil {
-			linkString = link.String()
-		}
 		// Generate talk object and add to talk store
 		talk := &Talk{
 			User:     user,
 			Title:    title,
 			Category: category,
 			Date:     date,
-			Link:     linkString,
+			Link:     link,
 			Body:     body,
 		}
 		secret, err := router.store.Add(talk)
