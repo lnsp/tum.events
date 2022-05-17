@@ -61,6 +61,7 @@ var talkCategories = []string{
 	"logic",
 	"data-analytics",
 	"machine-learning",
+	"formal-methods",
 }
 
 func main() {
