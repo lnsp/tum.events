@@ -325,7 +325,7 @@ func (router *Router) accept() http.Handler {
 
 func (router *Router) top() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		talks, err := router.store.Talks()
+		talks, err := router.store.UpcomingTalks()
 		if err != nil {
 			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
 			return
@@ -347,7 +347,7 @@ func (router *Router) top() http.Handler {
 func (router *Router) nextup() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get talks sorted by date
-		talks, err := router.store.Talks()
+		talks, err := router.store.UpcomingTalks()
 		if err != nil {
 			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
 			return
@@ -400,7 +400,7 @@ func (router *Router) category() http.Handler {
 			return
 		}
 		// Put into top context
-		talks, err := router.store.Talks()
+		talks, err := router.store.UpcomingTalks()
 		if err != nil {
 			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
 			return
@@ -767,7 +767,6 @@ func (store *TalkStore) Talk(id int64) (*Talk, error) {
 
 // mu must be held before calling
 func (store *TalkStore) updateCache(keys []string, hash []byte) error {
-retry:
 	// Generate list of kept talks
 	cached := make(map[string]int)
 	for i := range store.cache {
@@ -800,29 +799,29 @@ retry:
 		talkmap[talks[i].ID] = talks[i]
 	}
 
-	// Evict expired talks
-	truncatedNow := time.Now().Truncate(24 * time.Hour)
-	evicted := false
-	for i := range talks {
-		if !talks[i].Date.Truncate(24 * time.Hour).Before(truncatedNow) {
-			continue
-		}
-		logrus.WithField("key", keys[i]).Info("Evicting expired talk")
-		if err := store.delete(keys[i]); err != nil {
-			logrus.WithError(err).WithField("key", keys[i]).Warn("Failed to evict expired talk")
-		} else {
-			evicted = true
-		}
-	}
-	if evicted {
-		goto retry
-	}
-
 	// Update cache and hash
 	store.hash = hash
 	store.cache = talks
 	store.cachemap = talkmap
 	return nil
+}
+
+func (store *TalkStore) UpcomingTalks() ([]*Talk, error) {
+	talks, err := store.Talks()
+	if err != nil {
+		return nil, err
+	}
+	// Filter out and only retain upcoming talks
+	i := 0
+	t := time.Now().Truncate(time.Hour * 24)
+	for j := range talks {
+		if talks[j].Date.Truncate(time.Hour * 24).Before(t) {
+			continue
+		}
+		talks[i] = talks[j]
+		i++
+	}
+	return talks[:i], nil
 }
 
 func (store *TalkStore) Talks() ([]*Talk, error) {
