@@ -76,8 +76,7 @@ func main() {
 	store := NewTalkStore(&KVCreds{
 		Token:   os.Getenv("VALAR_TOKEN"),
 		Project: os.Getenv("VALAR_PROJECT"),
-		Prefix:  os.Getenv("VALAR_PREFIX"),
-	})
+	}, os.Getenv("VALAR_PREFIX"))
 	publicURL, err := url.Parse(os.Getenv("ROUTER_PUBLICURL"))
 	if err != nil {
 		logrus.WithError(err).Fatal("public url is invalid")
@@ -475,7 +474,6 @@ type Talk struct {
 type KVCreds struct {
 	Token   string
 	Project string
-	Prefix  string
 }
 
 type MailConfig struct {
@@ -529,7 +527,8 @@ func (mp *MailProvider) SendVerification(user, link string, talk *Talk) error {
 }
 
 type TalkStore struct {
-	creds *KVCreds
+	kv     *KVStore
+	prefix string
 
 	mu       sync.Mutex
 	cache    []*Talk
@@ -537,19 +536,26 @@ type TalkStore struct {
 	hash     []byte
 }
 
-func NewTalkStore(creds *KVCreds) *TalkStore {
+func NewTalkStore(creds *KVCreds, prefix string) *TalkStore {
 	return &TalkStore{
-		creds: creds,
+		prefix: prefix,
+		kv: &KVStore{
+			KVCreds: creds,
+		},
 	}
 }
 
-func (store *TalkStore) atomicinc(key string) (int64, error) {
-	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?op=inc&mode=atomic", store.creds.Project, key)
+type KVStore struct {
+	*KVCreds
+}
+
+func (store *KVStore) atomicinc(key string) (int64, error) {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?op=inc&mode=atomic", store.Project, key)
 	request, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return -1, err
 	}
-	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	request.Header.Set("Authorization", "Bearer "+store.Token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return -1, err
@@ -564,13 +570,13 @@ func (store *TalkStore) atomicinc(key string) (int64, error) {
 	return num.Int64(), nil
 }
 
-func (store *TalkStore) delete(key string) error {
-	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.creds.Project, key)
+func (store *KVStore) delete(key string) error {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	request, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	request.Header.Set("Authorization", "Bearer "+store.Token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return err
@@ -579,14 +585,14 @@ func (store *TalkStore) delete(key string) error {
 	return nil
 }
 
-func (store *TalkStore) put(key string, value []byte) error {
-	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.creds.Project, key)
+func (store *KVStore) put(key string, value []byte) error {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	body := bytes.NewReader(value)
 	request, err := http.NewRequest(http.MethodPost, url, body)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	request.Header.Set("Authorization", "Bearer "+store.Token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return err
@@ -595,13 +601,13 @@ func (store *TalkStore) put(key string, value []byte) error {
 	return nil
 }
 
-func (store *TalkStore) fetch(key string) ([]byte, error) {
-	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.creds.Project, key)
+func (store *KVStore) fetch(key string) ([]byte, error) {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	request.Header.Set("Authorization", "Bearer "+store.Token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, err
@@ -614,13 +620,13 @@ func (store *TalkStore) fetch(key string) ([]byte, error) {
 	return data, nil
 }
 
-func (store *TalkStore) list(prefix string) ([]string, []byte, error) {
-	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?mode=list", store.creds.Project, prefix)
+func (store *KVStore) list(prefix string) ([]string, []byte, error) {
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?mode=list", store.Project, prefix)
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+store.creds.Token)
+	request.Header.Set("Authorization", "Bearer "+store.Token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, nil, err
@@ -644,13 +650,13 @@ const secretLength = 32
 
 func (store *TalkStore) HasActiveVerification(user string) (bool, error) {
 	// List all verifications
-	verifkeys, _, err := store.list(store.creds.Prefix + "_verif_")
+	verifkeys, _, err := store.kv.list(store.prefix + "_verif_")
 	if err != nil {
 		return false, fmt.Errorf("fetch verifications: %w", err)
 	}
 	// Go through each verification and check
 	for _, key := range verifkeys {
-		data, err := store.fetch(key)
+		data, err := store.kv.fetch(key)
 		if err != nil {
 			return false, fmt.Errorf("fetch verification: %w", err)
 		}
@@ -661,7 +667,7 @@ func (store *TalkStore) HasActiveVerification(user string) (bool, error) {
 		}
 		// Drop verification if expired
 		if !verification.Active() {
-			if err := store.delete(key); err != nil {
+			if err := store.kv.delete(key); err != nil {
 				return false, fmt.Errorf("delete verification: %w", err)
 			}
 		}
@@ -685,13 +691,13 @@ func (store *TalkStore) Add(talk *Talk) (string, error) {
 		Expiration: expiration,
 		Talk:       talk,
 	}
-	key := fmt.Sprintf("%s_verif_%s", store.creds.Prefix, secret)
+	key := fmt.Sprintf("%s_verif_%s", store.prefix, secret)
 	data, err := json.Marshal(verif)
 	if err != nil {
 		return "", fmt.Errorf("encode verification: %w", err)
 	}
 	// Store in KV
-	if err := store.put(key, data); err != nil {
+	if err := store.kv.put(key, data); err != nil {
 		return "", fmt.Errorf("store verification: %w", err)
 	}
 	return secret, nil
@@ -708,8 +714,8 @@ func (store *TalkStore) Verify(secret string) error {
 	}
 	// Retrieve verification and decode
 	var verif Verification
-	key := fmt.Sprintf("%s_verif_%s", store.creds.Prefix, secret)
-	verifdata, err := store.fetch(key)
+	key := fmt.Sprintf("%s_verif_%s", store.prefix, secret)
+	verifdata, err := store.kv.fetch(key)
 	if err != nil {
 		return fmt.Errorf("fetch verification: %w", err)
 	}
@@ -721,23 +727,23 @@ func (store *TalkStore) Verify(secret string) error {
 		return fmt.Errorf("verification expired")
 	}
 	// Delete verification from store
-	if err := store.delete(key); err != nil {
+	if err := store.kv.delete(key); err != nil {
 		return fmt.Errorf("delete verification: %w", err)
 	}
 	// Generate ID for talk
-	id, err := store.atomicinc(store.creds.Prefix + "_count")
+	id, err := store.kv.atomicinc(store.prefix + "_count")
 	if err != nil {
 		return fmt.Errorf("generate id: %w", err)
 	}
 	talk := verif.Talk
 	talk.ID = id
 	// Insert talk
-	talkkey := fmt.Sprintf("%s_talks_%d", store.creds.Prefix, talk.ID)
+	talkkey := fmt.Sprintf("%s_talks_%d", store.prefix, talk.ID)
 	talkdata, err := json.Marshal(talk)
 	if err != nil {
 		return fmt.Errorf("encode talk: %w", err)
 	}
-	if err := store.put(talkkey, talkdata); err != nil {
+	if err := store.kv.put(talkkey, talkdata); err != nil {
 		return fmt.Errorf("store talk: %w", err)
 	}
 	return nil
@@ -745,7 +751,7 @@ func (store *TalkStore) Verify(secret string) error {
 
 func (store *TalkStore) Talk(id int64) (*Talk, error) {
 	// List talks
-	talkkeys, hash, err := store.list(store.creds.Prefix + "_talks_")
+	talkkeys, hash, err := store.kv.list(store.prefix + "_talks_")
 	if err != nil {
 		return nil, fmt.Errorf("list talks: %w", err)
 	}
@@ -770,7 +776,7 @@ func (store *TalkStore) updateCache(keys []string, hash []byte) error {
 	// Generate list of kept talks
 	cached := make(map[string]int)
 	for i := range store.cache {
-		key := fmt.Sprintf("%s_talks_%d", store.creds.Prefix, store.cache[i].ID)
+		key := fmt.Sprintf("%s_talks_%d", store.prefix, store.cache[i].ID)
 		cached[key] = i
 	}
 
@@ -784,7 +790,7 @@ func (store *TalkStore) updateCache(keys []string, hash []byte) error {
 			continue
 		} else {
 			// Fetch new talk
-			talkdata, err := store.fetch(key)
+			talkdata, err := store.kv.fetch(key)
 			if err != nil {
 				return fmt.Errorf("fetch talk list: %w", err)
 			}
@@ -826,7 +832,7 @@ func (store *TalkStore) UpcomingTalks() ([]*Talk, error) {
 
 func (store *TalkStore) Talks() ([]*Talk, error) {
 	// List talks
-	talkkeys, hash, err := store.list(store.creds.Prefix + "_talks_")
+	talkkeys, hash, err := store.kv.list(store.prefix + "_talks_")
 	if err != nil {
 		return nil, fmt.Errorf("list talks: %w", err)
 	}
