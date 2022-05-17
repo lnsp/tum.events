@@ -767,6 +767,7 @@ func (store *TalkStore) Talk(id int64) (*Talk, error) {
 
 // mu must be held before calling
 func (store *TalkStore) updateCache(keys []string, hash []byte) error {
+retry:
 	// Generate list of kept talks
 	cached := make(map[string]int)
 	for i := range store.cache {
@@ -792,10 +793,29 @@ func (store *TalkStore) updateCache(keys []string, hash []byte) error {
 			if err := json.Unmarshal(talkdata, talks[i]); err != nil {
 				return fmt.Errorf("parse talk: %w", err)
 			}
+
 		}
 		// TODO(lnsp): Compute talk scores and ranks
 		talks[i].Rank = int64(i + 1)
 		talkmap[talks[i].ID] = talks[i]
+	}
+
+	// Evict expired talks
+	truncatedNow := time.Now().Truncate(24 * time.Hour)
+	evicted := false
+	for i := range talks {
+		if !talks[i].Date.Truncate(24 * time.Hour).Before(truncatedNow) {
+			continue
+		}
+		logrus.WithField("key", keys[i]).Info("Evicting expired talk")
+		if err := store.delete(keys[i]); err != nil {
+			logrus.WithError(err).WithField("key", keys[i]).Warn("Failed to evict expired talk")
+		} else {
+			evicted = true
+		}
+	}
+	if evicted {
+		goto retry
 	}
 
 	// Update cache and hash
