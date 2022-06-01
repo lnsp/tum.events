@@ -1,26 +1,23 @@
 {{ define "title" }}{{ .Talk.Title }} &mdash; IN.TUM Talks{{ end }}
 {{ define "content" }}
-<div class="py-2">
-    <div class="flex gap-2 items-center">
-        <div class="w-6 text-right"></div>
-        <div>
-            <div class="">
-                <a class="flex items-center hover:underline visited:text-gray-500"
-                   href="{{ if .Talk.Link }}{{ .Talk.Link }}{{ else }}/talk/{{ .Talk.ID }}{{ end }}">
-                    {{ .Talk.Title }}
-                </a>
-            </div>
-            <div class="text-sm text-gray-500 flex items-center gap-2">
-                <span>{{ .Talk.Date | humandate }}</span>
-                |
-                <a class="text-gray-500 text-xs hover:underline"
-                   href="/categories/{{ .Talk.Category }}">{{ .Talk.Category }}</a>
-                |
-                <a class="text-gray-500 text-xs hover:underline"
-                   href="/talk/{{ .Talk.ID }}">comments</a>
-            </div>
-        </div>
+<div class="pt-2 pb-4">
+  <div class="flex gap-2 items-center">
+    <div class="w-6 text-right"></div>
+    <div>
+      <div class="">
+        <a class="flex items-center hover:underline visited:text-gray-500"
+           href="{{ if .Talk.Link }}{{ .Talk.Link }}{{ else }}/talk/{{ .Talk.ID }}{{ end }}">
+          {{ .Talk.Title }}
+        </a>
+      </div>
+      <div class="text-sm text-gray-500 flex items-center gap-2">
+        <span>{{ .Talk.Date | humandate }}</span>
+        |
+        <a class="text-gray-500 text-xs hover:underline"
+           href="/categories/{{ .Talk.Category }}">[{{ .Talk.Category }}]</a>
+      </div>
     </div>
-    <div class="mt-3 ml-8 text-gray-500">{{ .Talk.Body }}</div>
+  </div>
+  <div class="mt-3 ml-8 text-gray-500 flex flex-col gap-2">{{ .Talk.Body }}</div>
 </div>
 {{ end }}

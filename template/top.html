@@ -15,7 +15,12 @@
         <span>{{ .Date | humandate }}</span>
         |
         <a class="text-gray-500 text-xs hover:underline"
-           href="/categories/{{ .Category }}">{{ .Category }}</a>
+           href="/categories/{{ .Category }}">[{{ .Category }}]</a>
+        {{ if .Body }}
+        |
+        <a class="text-gray-500 text-xs hover:underline"
+           href="/talk/{{ .ID }}">details</a>
+        {{ end }}
       </div>
     </div>
   </div>

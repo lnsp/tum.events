@@ -20,7 +20,12 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/sirupsen/logrus"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer/html"
 
 	_ "time/tzdata"
 )
@@ -204,10 +209,25 @@ func (router *Router) talk() http.Handler {
 			http.Error(w, "talk not found", http.StatusNotFound)
 			return
 		}
+		type ctxTalk struct {
+			ID       int64
+			Title    string
+			Date     time.Time
+			Category string
+			Body     template.HTML
+			Link     string
+		}
 		ctx := struct {
-			Talk *Talk
+			Talk ctxTalk
 		}{
-			talk,
+			ctxTalk{
+				ID:       talk.ID,
+				Title:    talk.Title,
+				Date:     talk.Date,
+				Category: talk.Category,
+				Link:     talk.Link,
+				Body:     template.HTML(talk.RenderAsHTML()),
+			},
 		}
 		if err := router.templates["talk.html"].Execute(w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
@@ -466,6 +486,35 @@ type Talk struct {
 	Date     time.Time `json:"d"`
 	Link     string    `json:"l,omitempty"`
 	Body     string    `json:"b,omitempty"`
+}
+
+var markdownRenderer = goldmark.New(
+	goldmark.WithExtensions(
+		extension.NewTypographer(),
+		extension.NewLinkify(),
+	),
+	goldmark.WithParserOptions(
+		parser.WithAutoHeadingID(),
+	),
+	goldmark.WithRendererOptions(
+		html.WithHardWraps(),
+		html.WithXHTML(),
+	),
+)
+var sanitizePolicy = bluemonday.NewPolicy()
+
+func init() {
+	sanitizePolicy.AllowStandardURLs()
+	sanitizePolicy.AllowLists()
+	sanitizePolicy.AllowElements("h2", "h3", "h4", "h5", "h6", "h7")
+	sanitizePolicy.AllowElements("p")
+}
+
+func (t *Talk) RenderAsHTML() string {
+	var buf bytes.Buffer
+	markdownRenderer.Convert([]byte(t.Body), &buf)
+	sanitized := sanitizePolicy.SanitizeBytes(buf.Bytes())
+	return string(sanitized)
 }
 
 type KVCreds struct {
