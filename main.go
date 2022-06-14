@@ -1,12 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"crypto/rand"
 	"embed"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -16,16 +11,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/microcosm-cc/bluemonday"
+	"github.com/lnsp/tumtalks/kv"
+	"github.com/lnsp/tumtalks/mail"
+	"github.com/lnsp/tumtalks/structs"
 	"github.com/sirupsen/logrus"
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/renderer/html"
 
 	_ "time/tzdata"
 )
@@ -33,14 +25,8 @@ import (
 //go:embed favicon.png
 var favicon []byte
 
-//go:embed tailwind.min.css
-var tailwindStyles []byte
-
-//go:embed template/*
+//go:embed templates/*.html
 var webTemplates embed.FS
-
-//go:embed email/*
-var emailTemplates embed.FS
 
 var talkCategories = []string{
 	"software-engineering",
@@ -69,13 +55,13 @@ var talkCategories = []string{
 const authCookieKey = "auth"
 
 func main() {
-	mail := NewMailProvider(&MailConfig{
+	mail := mail.NewProvider(&mail.Config{
 		Sender:       os.Getenv("MAIL_SENDER"),
 		SenderDomain: os.Getenv("MAIL_DOMAIN"),
 		APIKey:       os.Getenv("MAIL_APIKEY"),
 		UserDomain:   os.Getenv("MAIL_USERDOMAIN"),
-	}, emailTemplates)
-	store := NewTalkStore(&KVCreds{
+	})
+	store := structs.NewStore(&kv.Credentials{
 		Token:   os.Getenv("VALAR_TOKEN"),
 		Project: os.Getenv("VALAR_PROJECT"),
 	}, os.Getenv("VALAR_PREFIX"))
@@ -83,7 +69,8 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("public url is invalid")
 	}
-	router := NewRouter(publicURL, store, mail)
+	httpsOnly := os.Getenv("ROUTER_HTTPSONLY") != ""
+	router := NewRouter(publicURL, store, mail, httpsOnly)
 	router.setup()
 	server := &http.Server{
 		Addr:         ":8080",
@@ -100,13 +87,20 @@ var templateFuncs = template.FuncMap{
 	"humandate": func(t time.Time) string {
 		return t.Format("02.01.2006 15:04")
 	},
+	"inc": func(i int) int {
+		return i + 1
+	},
 }
+
+//go:embed templates/tailwind.min.css
+var tailwindStyles []byte
 
 type Router struct {
 	publicURL *url.URL
 	mux       *mux.Router
-	store     *TalkStore
-	mail      *MailProvider
+	store     *structs.Store
+	mail      *mail.Provider
+	httpsOnly bool
 
 	templates map[string]*template.Template
 }
@@ -120,22 +114,29 @@ func (router *Router) setup() {
 	router.mux.Handle("/categories/{category}", router.category()).Methods("GET")
 	router.mux.Handle("/talk/{id}", router.talk()).Methods("GET")
 	router.mux.Handle("/submit", router.submit()).Methods("GET")
-	router.mux.Handle("/submit", router.accept()).Methods("POST")
+	router.mux.Handle("/submit", router.submitForm()).Methods("POST")
 	router.mux.Handle("/verify/{secret}", router.confirm()).Methods("GET")
 	router.mux.Handle("/verify/{secret}", router.verify()).Methods("POST")
 	router.mux.Handle("/styles.css", router.styles()).Methods("GET")
 	router.mux.Handle("/favicon.png", router.favicon()).Methods("GET")
 	router.mux.Handle("/legal", router.legal()).Methods("GET")
+	router.mux.Handle("/login", router.loginWithCode()).Methods("POST").Queries("method", "code")
+	router.mux.Handle("/login", router.login()).Methods("GET")
+	router.mux.Handle("/login", router.loginForm()).Methods("POST")
+	router.mux.Handle("/logout", router.logout()).Methods("POST")
 	// parse templates
 	router.templates = make(map[string]*template.Template)
-	for _, t := range []string{"template/categories.html", "template/submit.html", "template/top.html", "template/confirm.html", "template/legal.html", "template/talk.html"} {
-		router.templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(templateFuncs).ParseFS(webTemplates, "template/base.html", t))
+	for _, t := range []string{"templates/categories.html", "templates/submit.html", "templates/top.html", "templates/confirm.html", "templates/legal.html", "templates/talk.html", "templates/login.html", "templates/login-code.html"} {
+		router.templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(templateFuncs).ParseFS(webTemplates, "templates/base.html", t))
 	}
 }
 
 func (router *Router) submit() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		context := struct{ Categories []string }{talkCategories}
+		context := struct {
+			*authCtx
+			Categories []string
+		}{router.authCtxFromRequest(w, r), talkCategories}
 		if err := router.templates["submit.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
 		}
@@ -152,7 +153,10 @@ const localTimeFormat = "2006-01-02T15:04"
 
 func (router *Router) confirm() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := router.templates["confirm.html"].Execute(w, &struct{ Talk bool }{true}); err != nil {
+		if err := router.templates["confirm.html"].Execute(w, &struct {
+			*authCtx
+			Talk bool
+		}{router.authCtxFromRequest(w, r), true}); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
 			http.Error(w, "rendering failed", http.StatusInternalServerError)
 		}
@@ -186,11 +190,199 @@ func (router *Router) favicon() http.Handler {
 
 func (router *Router) legal() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := router.templates["legal.html"].Execute(w, nil); err != nil {
+		if err := router.templates["legal.html"].Execute(w, router.authCtxFromRequest(w, r)); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
 			http.Error(w, "rendering failed", http.StatusInternalServerError)
 		}
 	})
+}
+
+func (router *Router) login() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if session is already valid, then redirect back to home page
+		ac := router.authCtxFromRequest(w, r)
+		if ac.Authenticated() {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		// Else show login form
+		if err := router.templates["login.html"].Execute(w, router.authCtxFromRequest(w, r)); err != nil {
+			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
+		}
+	})
+}
+
+func (router *Router) loginForm() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if session is already valid, then redirect back to home page
+		ac := router.authCtxFromRequest(w, r)
+		if ac.Authenticated() {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		// Parse form data
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "could not parse form", http.StatusBadRequest)
+			return
+		}
+		// Else validate input
+		user := r.Form.Get("uid")
+		if !userRegex.MatchString(user) {
+			http.Error(w, "user not valid", http.StatusBadRequest)
+			return
+		}
+
+		// Check that there is no active login attempt
+		active, err := router.store.HasActiveLogin(user)
+		if err != nil {
+			http.Error(w, "could not check logins", http.StatusInternalServerError)
+			logrus.WithError(err).Error("Failed to check logins")
+			return
+		}
+		if active {
+			http.Error(w, "user has pending login attempt", http.StatusConflict)
+			return
+		}
+
+		// Create login attempt
+		login, err := router.store.AttemptLogin(user)
+		if err != nil {
+			http.Error(w, "could not create login", http.StatusInternalServerError)
+			logrus.WithError(err).Error("Failed to create login")
+			return
+		}
+
+		// Send out email
+		if err := router.mail.SendLogin(login.User, login.Code); err != nil {
+			http.Error(w, "could not send login code", http.StatusInternalServerError)
+			logrus.WithError(err).Error("Failed to send login code")
+			return
+		}
+
+		// Render confirm site
+		ctx := struct {
+			*authCtx
+			Key string
+		}{
+			ac,
+			login.Key,
+		}
+		if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
+			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
+		}
+	})
+}
+
+var loginKeyRegex = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var loginCodeRegex = regexp.MustCompile(`^[0-9]{6}$`)
+
+const sessionCookieExpiration = time.Hour * 24 * 30
+
+func (router *Router) loginWithCode() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if session is already valid, then redirect back to home page
+		ac := router.authCtxFromRequest(w, r)
+		if ac.Authenticated() {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+		}
+		// Get login key and code
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "could not parse form", http.StatusBadRequest)
+			return
+		}
+		// Verify key and code
+		key := r.Form.Get("key")
+		if !loginKeyRegex.MatchString(key) {
+			http.Error(w, "bad login key format", http.StatusBadRequest)
+			return
+		}
+		code := r.Form.Get("code")
+		if !loginCodeRegex.MatchString(code) {
+			http.Error(w, "bad login code format", http.StatusBadRequest)
+			return
+		}
+		// Retrieve login attempt with key
+		session, err := router.store.ConfirmLogin(key, code)
+		if err != nil {
+			http.Error(w, "could not confirm login", http.StatusInternalServerError)
+			logrus.WithError(err).Warn("failed to confirm login")
+			return
+		}
+		// Set session cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:    "session",
+			Value:   session.Key,
+			Expires: session.Expiration,
+		})
+		// Redirect to home site
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
+}
+
+func (router *Router) logout() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if session is valid, else redirect to homepage
+		ac := router.authCtxFromRequest(w, r)
+		if !ac.Authenticated() {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		// Drop cookie in user session
+		dropSessionCookie(w)
+		// Delete session from store
+		if err := router.store.DeleteSession(ac.SessionKey); err != nil {
+			http.Error(w, "could not drop session", http.StatusInternalServerError)
+			return
+		}
+		// Redirect to home page
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
+}
+
+const sessionCookie = "session"
+
+type authCtx struct {
+	Login      string
+	SessionKey string
+}
+
+func (a *authCtx) Authenticated() bool {
+	return a.Login != ""
+}
+
+func dropSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:   sessionCookie,
+		MaxAge: -1,
+	})
+}
+
+func (router *Router) authCtxFromRequest(w http.ResponseWriter, r *http.Request) *authCtx {
+	// Get request session cookie
+	cookie, err := r.Cookie(sessionCookie)
+	if err == http.ErrNoCookie {
+		return &authCtx{}
+	}
+	// Get session key from cookie
+	key := cookie.Value
+	// Make sure that key is valid session key
+	if !loginKeyRegex.MatchString(key) {
+		dropSessionCookie(w)
+		return &authCtx{}
+	}
+	user, err := router.store.VerifySession(key)
+	if err != nil {
+		// Delete session cookie
+		dropSessionCookie(w)
+		return &authCtx{}
+	}
+	return &authCtx{
+		Login:      user,
+		SessionKey: key,
+	}
 }
 
 func (router *Router) talk() http.Handler {
@@ -218,8 +410,10 @@ func (router *Router) talk() http.Handler {
 			Link     string
 		}
 		ctx := struct {
+			*authCtx
 			Talk ctxTalk
 		}{
+			router.authCtxFromRequest(w, r),
 			ctxTalk{
 				ID:       talk.ID,
 				Title:    talk.Title,
@@ -237,18 +431,22 @@ func (router *Router) talk() http.Handler {
 	})
 }
 
-func (router *Router) accept() http.Handler {
+func (router *Router) submitForm() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ac := router.authCtxFromRequest(w, r)
 		// Parse form data
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "could not parse form", http.StatusBadRequest)
 			return
 		}
 		// Verify items one by one
-		user := r.Form.Get("uid")
-		if !userRegex.MatchString(user) {
-			http.Error(w, "user not valid", http.StatusBadRequest)
-			return
+		user := ac.Login
+		if !ac.Authenticated() {
+			user := r.Form.Get("uid")
+			if !userRegex.MatchString(user) {
+				http.Error(w, "user not valid", http.StatusBadRequest)
+				return
+			}
 		}
 		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
 		title := r.Form.Get("title")
@@ -296,6 +494,25 @@ func (router *Router) accept() http.Handler {
 			http.Error(w, "date has to be in the future", http.StatusBadRequest)
 			return
 		}
+		// If user is authenticated, directly insert talk and redirect
+		talk := &structs.Talk{
+			User:     user,
+			Title:    title,
+			Category: category,
+			Date:     date,
+			Link:     link,
+			Body:     body,
+		}
+		if ac.Authenticated() {
+			if err := router.store.InsertTalk(talk); err != nil {
+				logrus.WithError(err).Error("Failed to insert talk")
+				http.Error(w, "inserting talk failed", http.StatusInternalServerError)
+				return
+			}
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+
 		// Check if there are any open verifications for this user
 		if ok, err := router.store.HasActiveVerification(user); err != nil {
 			http.Error(w, "failed to check verifications", http.StatusInternalServerError)
@@ -303,15 +520,6 @@ func (router *Router) accept() http.Handler {
 		} else if ok {
 			http.Error(w, "user has active verifications", http.StatusForbidden)
 			return
-		}
-		// Generate talk object and add to talk store
-		talk := &Talk{
-			User:     user,
-			Title:    title,
-			Category: category,
-			Date:     date,
-			Link:     link,
-			Body:     body,
 		}
 		secret, err := router.store.Add(talk)
 		if err != nil {
@@ -331,7 +539,10 @@ func (router *Router) accept() http.Handler {
 			return
 		}
 		// Render confirm template
-		if err := router.templates["confirm.html"].Execute(w, &struct{ Talk bool }{}); err != nil {
+		if err := router.templates["confirm.html"].Execute(w, &struct {
+			*authCtx
+			Talk bool
+		}{ac, false}); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
 			http.Error(w, "rendering failed", http.StatusInternalServerError)
 			return
@@ -349,8 +560,10 @@ func (router *Router) top() http.Handler {
 		sort.Slice(talks, func(i, j int) bool { return talks[i].Rank < talks[j].Rank })
 
 		context := struct {
-			Talks []*Talk
+			*authCtx
+			Talks []*structs.Talk
 		}{
+			router.authCtxFromRequest(w, r),
 			talks,
 		}
 		if err := router.templates["top.html"].Execute(w, &context); err != nil {
@@ -372,8 +585,10 @@ func (router *Router) nextup() http.Handler {
 
 		// Put into top context
 		context := struct {
-			Talks []*Talk
+			*authCtx
+			Talks []*structs.Talk
 		}{
+			router.authCtxFromRequest(w, r),
 			talks,
 		}
 		if err := router.templates["top.html"].Execute(w, &context); err != nil {
@@ -387,9 +602,11 @@ func (router *Router) categories() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Put into top context
 		context := struct {
+			*authCtx
 			Category   bool
 			Categories []string
 		}{
+			router.authCtxFromRequest(w, r),
 			false,
 			talkCategories,
 		}
@@ -434,9 +651,11 @@ func (router *Router) category() http.Handler {
 		sort.Slice(talks, func(i, j int) bool { return talks[i].Date.Before(talks[j].Date) })
 
 		context := struct {
+			*authCtx
 			Category string
-			Talks    []*Talk
+			Talks    []*structs.Talk
 		}{
+			authCtx:  router.authCtxFromRequest(w, r),
 			Category: category,
 			Talks:    talks,
 		}
@@ -447,12 +666,13 @@ func (router *Router) category() http.Handler {
 	})
 }
 
-func NewRouter(publicURL *url.URL, store *TalkStore, mail *MailProvider) *Router {
+func NewRouter(publicURL *url.URL, store *structs.Store, mail *mail.Provider, httpsOnly bool) *Router {
 	return &Router{
 		mux:       mux.NewRouter(),
 		publicURL: publicURL,
 		store:     store,
 		mail:      mail,
+		httpsOnly: httpsOnly,
 	}
 }
 
@@ -466,290 +686,4 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"path":     r.URL.Path,
 		"method":   r.Method,
 	}).Info("Served request")
-}
-
-type Verification struct {
-	Expiration time.Time `json:"e"`
-	Talk       *Talk     `json:"t"`
-}
-
-func (v *Verification) Active() bool {
-	return time.Since(v.Expiration) < expirationInterval
-}
-
-type Talk struct {
-	ID       int64     `json:"i,omitempty"`
-	Rank     int64     `json:"-"`
-	User     string    `json:"u"`
-	Title    string    `json:"t"`
-	Category string    `json:"c"`
-	Date     time.Time `json:"d"`
-	Link     string    `json:"l,omitempty"`
-	Body     string    `json:"b,omitempty"`
-}
-
-var markdownRenderer = goldmark.New(
-	goldmark.WithExtensions(
-		extension.NewTypographer(),
-		extension.NewLinkify(),
-	),
-	goldmark.WithParserOptions(
-		parser.WithAutoHeadingID(),
-	),
-	goldmark.WithRendererOptions(
-		html.WithHardWraps(),
-		html.WithXHTML(),
-	),
-)
-var sanitizePolicy = bluemonday.NewPolicy()
-
-func init() {
-	sanitizePolicy.AllowStandardURLs()
-	sanitizePolicy.AllowLists()
-	sanitizePolicy.AllowElements("h2", "h3", "h4", "h5", "h6", "h7")
-	sanitizePolicy.AllowElements("p")
-}
-
-func (t *Talk) RenderAsHTML() string {
-	var buf bytes.Buffer
-	markdownRenderer.Convert([]byte(t.Body), &buf)
-	sanitized := sanitizePolicy.SanitizeBytes(buf.Bytes())
-	return string(sanitized)
-}
-
-type KVCreds struct {
-	Token   string
-	Project string
-}
-
-type TalkStore struct {
-	kv     *KVStore
-	prefix string
-
-	mu       sync.Mutex
-	cache    []*Talk
-	cachemap map[int64]*Talk
-	hash     []byte
-}
-
-func NewTalkStore(creds *KVCreds, prefix string) *TalkStore {
-	return &TalkStore{
-		prefix: prefix,
-		kv: &KVStore{
-			KVCreds: creds,
-		},
-	}
-}
-
-const expirationInterval = 15 * time.Minute
-const secretLength = 32
-
-func (store *TalkStore) HasActiveVerification(user string) (bool, error) {
-	// List all verifications
-	verifkeys, _, err := store.kv.list(store.prefix + "_verif_")
-	if err != nil {
-		return false, fmt.Errorf("fetch verifications: %w", err)
-	}
-	// Go through each verification and check
-	for _, key := range verifkeys {
-		data, err := store.kv.fetch(key)
-		if err != nil {
-			return false, fmt.Errorf("fetch verification: %w", err)
-		}
-		// Decode verification
-		var verification Verification
-		if err := json.Unmarshal(data, &verification); err != nil {
-			return false, fmt.Errorf("decode verification: %w", err)
-		}
-		// Drop verification if expired
-		if !verification.Active() {
-			if err := store.kv.delete(key); err != nil {
-				return false, fmt.Errorf("delete verification: %w", err)
-			}
-		}
-		// Check if we match
-		if verification.Talk.User == user {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (store *TalkStore) Add(talk *Talk) (string, error) {
-	// Generate secret
-	randBytes := make([]byte, secretLength)
-	rand.Reader.Read(randBytes)
-	secret := hex.EncodeToString(randBytes)
-	// Get timestamp
-	expiration := time.Now().Add(expirationInterval)
-	// Create verification
-	verif := &Verification{
-		Expiration: expiration,
-		Talk:       talk,
-	}
-	key := fmt.Sprintf("%s_verif_%s", store.prefix, secret)
-	data, err := json.Marshal(verif)
-	if err != nil {
-		return "", fmt.Errorf("encode verification: %w", err)
-	}
-	// Store in KV
-	if err := store.kv.put(key, data); err != nil {
-		return "", fmt.Errorf("store verification: %w", err)
-	}
-	return secret, nil
-}
-
-func (store *TalkStore) Verify(secret string) error {
-	// Attempt to decode secret and verify length
-	secretBytes, err := hex.DecodeString(secret)
-	if err != nil {
-		return fmt.Errorf("decode secret: %w", err)
-	}
-	if len(secretBytes) != secretLength {
-		return fmt.Errorf("invalid secret")
-	}
-	// Retrieve verification and decode
-	var verif Verification
-	key := fmt.Sprintf("%s_verif_%s", store.prefix, secret)
-	verifdata, err := store.kv.fetch(key)
-	if err != nil {
-		return fmt.Errorf("fetch verification: %w", err)
-	}
-	if err := json.Unmarshal(verifdata, &verif); err != nil {
-		return fmt.Errorf("decode verification: %w", err)
-	}
-	// Check expiration time
-	if !verif.Active() {
-		return fmt.Errorf("verification expired")
-	}
-	// Delete verification from store
-	if err := store.kv.delete(key); err != nil {
-		return fmt.Errorf("delete verification: %w", err)
-	}
-	// Generate ID for talk
-	id, err := store.kv.atomicinc(store.prefix + "_count")
-	if err != nil {
-		return fmt.Errorf("generate id: %w", err)
-	}
-	talk := verif.Talk
-	talk.ID = id
-	// Insert talk
-	talkkey := fmt.Sprintf("%s_talks_%d", store.prefix, talk.ID)
-	talkdata, err := json.Marshal(talk)
-	if err != nil {
-		return fmt.Errorf("encode talk: %w", err)
-	}
-	if err := store.kv.put(talkkey, talkdata); err != nil {
-		return fmt.Errorf("store talk: %w", err)
-	}
-	return nil
-}
-
-func (store *TalkStore) Talk(id int64) (*Talk, error) {
-	// List talks
-	talkkeys, hash, err := store.kv.list(store.prefix + "_talks_")
-	if err != nil {
-		return nil, fmt.Errorf("list talks: %w", err)
-	}
-
-	// Compute hash before parsing, compare with current one
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if bytes.Equal(hash, store.hash) {
-		return store.cachemap[id], nil
-	}
-
-	// Else update cache
-	if err := store.updateCache(talkkeys, hash); err != nil {
-		return nil, fmt.Errorf("update cache: %w", err)
-	}
-
-	return store.cachemap[id], nil
-}
-
-// mu must be held before calling
-func (store *TalkStore) updateCache(keys []string, hash []byte) error {
-	// Generate list of kept talks
-	cached := make(map[string]int)
-	for i := range store.cache {
-		key := fmt.Sprintf("%s_talks_%d", store.prefix, store.cache[i].ID)
-		cached[key] = i
-	}
-
-	// Go through each key and fetch talk
-	talks := make([]*Talk, len(keys))
-	talkmap := make(map[int64]*Talk)
-	for i, key := range keys {
-		if j, ok := cached[key]; ok {
-			// Copy over from cache
-			talks[i] = store.cache[j]
-			continue
-		} else {
-			// Fetch new talk
-			talkdata, err := store.kv.fetch(key)
-			if err != nil {
-				return fmt.Errorf("fetch talk list: %w", err)
-			}
-			talks[i] = &Talk{}
-			if err := json.Unmarshal(talkdata, talks[i]); err != nil {
-				return fmt.Errorf("parse talk: %w", err)
-			}
-
-		}
-		// TODO(lnsp): Compute talk scores and ranks
-		talks[i].Rank = int64(i + 1)
-		talkmap[talks[i].ID] = talks[i]
-	}
-
-	// Update cache and hash
-	store.hash = hash
-	store.cache = talks
-	store.cachemap = talkmap
-	return nil
-}
-
-func (store *TalkStore) UpcomingTalks() ([]*Talk, error) {
-	talks, err := store.Talks()
-	if err != nil {
-		return nil, err
-	}
-	// Filter out and only retain upcoming talks
-	i := 0
-	t := time.Now().Truncate(time.Hour * 24)
-	for j := range talks {
-		if talks[j].Date.Truncate(time.Hour * 24).Before(t) {
-			continue
-		}
-		talks[i] = talks[j]
-		i++
-	}
-	return talks[:i], nil
-}
-
-func (store *TalkStore) Talks() ([]*Talk, error) {
-	// List talks
-	talkkeys, hash, err := store.kv.list(store.prefix + "_talks_")
-	if err != nil {
-		return nil, fmt.Errorf("list talks: %w", err)
-	}
-
-	// Compute hash before parsing, compare with current one
-	store.mu.Lock()
-	defer store.mu.Unlock()
-
-	slice := make([]*Talk, len(store.cache))
-	copy(slice, store.cache)
-
-	if bytes.Equal(hash, store.hash) {
-		return slice, nil
-	}
-
-	// Else update cache
-	if err := store.updateCache(talkkeys, hash); err != nil {
-		return nil, fmt.Errorf("update cache: %w", err)
-	}
-
-	slice = make([]*Talk, len(store.cache))
-	copy(slice, store.cache)
-	return slice, nil
 }

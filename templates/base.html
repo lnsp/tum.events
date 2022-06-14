@@ -27,6 +27,15 @@
           <a href="/submit">submit</a>
         </div>
       </div>
+      <div class="flex gap-1 whitespace-nowrap">
+        {{ if .Login }}
+        <span>{{ .Login }}</span>
+        <span>|</span>
+        <form action="/logout" method="POST"><button role="submit">logout</button></form>
+        {{ else }}
+        <a href="/login">login</a>
+        {{ end }}
+      </div>
     </nav>
     {{ template "content" . }}
   </div>

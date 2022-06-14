@@ -12,6 +12,8 @@ IN.TUM talks uses KV to store all talk data. Talks are stored in the format of `
 The talk structure uses a minimal JSON format where a single character identifies a field. It is defined using
 the following Go structure.
 
+### Talks
+
 ```go
 type Talk struct {
 	ID       int64     `json:"i,omitempty"`
@@ -39,3 +41,30 @@ Thus, the following JSON block is a valid Talk doc.
 ```
 
 Talks are synchronized if and only if the talk cache is empty OR the talk doc list changes.
+
+### Sessions
+
+A session represents an authenticated user.
+
+```go
+type SessionVerification struct {
+	Expiration time.Time
+	Code string
+	User string
+}
+```
+
+```go
+type Session struct {
+	Expiration time.Time
+
+	ID       int64     `json:"i,omitempty"`
+	Rank     int64     `json:"-"`
+	User     string    `json:"u"`
+	Title    string    `json:"t"`
+	Category string    `json:"c"`
+	Date     time.Time `json:"d"`
+	Link     string    `json:"l,omitempty"`
+	Body     string    `json:"b,omitempty"`
+}
+```

@@ -1,0 +1,15 @@
+{{ define "title" }}Login &mdash; TUM Talks{{ end }}
+{{ define "content" }}
+<form action="/login" method="POST" class="p-2">
+  <div class="mb-2">To verify your identity, please enter your TUM identifier. You will receive an email with a login code afterwards.</div>
+  <div class="grid grid-cols-12 gap-2">
+    <label for="uid" class="col-span-2">TUM User ID</label>
+    <div class="col-span-10">
+      <input name="uid" type="text" class="rounded border border-black w-full max-w-xs" placeholder="go42tum" required>
+    </div>
+    <div class="col-span-full">
+      <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">login</button>
+    </div>
+  </div>
+</form>
+{{ end }}

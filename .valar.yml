@@ -31,3 +31,6 @@ deployment:
         - key: ROUTER_PUBLICURL
           value: https://lennart-tumtalks.valar.app
           secret: false
+        - key: ROUTER_HTTPSONLY
+          value: "true"
+          secret: false

@@ -1,4 +1,4 @@
-package main
+package kv
 
 import (
 	"bytes"
@@ -10,11 +10,16 @@ import (
 	"net/http"
 )
 
-type KVStore struct {
-	*KVCreds
+type Credentials struct {
+	Token   string
+	Project string
 }
 
-func (store *KVStore) atomicinc(key string) (int64, error) {
+type Store struct {
+	*Credentials
+}
+
+func (store *Store) AtomicInc(key string) (int64, error) {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?op=inc&mode=atomic", store.Project, key)
 	request, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
@@ -35,7 +40,7 @@ func (store *KVStore) atomicinc(key string) (int64, error) {
 	return num.Int64(), nil
 }
 
-func (store *KVStore) delete(key string) error {
+func (store *Store) Delete(key string) error {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	request, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
@@ -50,7 +55,7 @@ func (store *KVStore) delete(key string) error {
 	return nil
 }
 
-func (store *KVStore) put(key string, value []byte) error {
+func (store *Store) Put(key string, value []byte) error {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	body := bytes.NewReader(value)
 	request, err := http.NewRequest(http.MethodPost, url, body)
@@ -66,7 +71,7 @@ func (store *KVStore) put(key string, value []byte) error {
 	return nil
 }
 
-func (store *KVStore) fetch(key string) ([]byte, error) {
+func (store *Store) Fetch(key string) ([]byte, error) {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -85,7 +90,7 @@ func (store *KVStore) fetch(key string) ([]byte, error) {
 	return data, nil
 }
 
-func (store *KVStore) list(prefix string) ([]string, []byte, error) {
+func (store *Store) List(prefix string) ([]string, []byte, error) {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?mode=list", store.Project, prefix)
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

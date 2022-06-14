@@ -1,25 +1,25 @@
 {{ define "title" }}IN.TUM Talks &mdash; Top talks{{ end }}
 {{ define "content" }}
 <div class="py-2 flex gap-2 flex-col">
-  {{ range .Talks }}
+  {{ range $i, $t := .Talks }}
   <div class="flex gap-2 items-center">
-    <div class="w-6 text-right text-sm text-gray-500">{{ .Rank }}.</div>
+    <div class="w-6 text-right text text-gray-500">{{ $i | inc }}.</div>
     <div class="flex flex-col">
       <div class="">
         <a class="flex items-center hover:underline visited:text-gray-500"
-           href="{{ if .Link }}{{ .Link }}{{ else }}/talk/{{ .ID }}{{ end }}">
-          {{ .Title }}
+           href="{{ if $t.Link }}{{ $t.Link }}{{ else }}/talk/{{ $t.ID }}{{ end }}">
+          {{ $t.Title }}
         </a>
       </div>
       <div class="text-sm text-gray-500 flex items-center gap-2">
-        <span>{{ .Date | humandate }}</span>
+        <span>{{ $t.Date | humandate }}</span>
         |
         <a class="text-gray-500 text-xs hover:underline"
-           href="/categories/{{ .Category }}">[{{ .Category }}]</a>
-        {{ if .Body }}
+           href="/categories/{{ $t.Category }}">[{{ $t.Category }}]</a>
+        {{ if $t.Body }}
         |
         <a class="text-gray-500 text-xs hover:underline"
-           href="/talk/{{ .ID }}">details</a>
+           href="/talk/{{ $t.ID }}">details</a>
         {{ end }}
       </div>
     </div>
