@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -205,8 +206,14 @@ func (router *Router) login() http.Handler {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
+		ctx := struct {
+			*authCtx
+			Error string
+		}{
+			authCtx: ac,
+		}
 		// Else show login form
-		if err := router.templates["login.html"].Execute(w, router.authCtxFromRequest(w, r)); err != nil {
+		if err := router.templates["login.html"].Execute(w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
 			http.Error(w, "rendering failed", http.StatusInternalServerError)
 		}
@@ -221,6 +228,20 @@ func (router *Router) loginForm() http.Handler {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
+		showError := func(errorMsg string) {
+			ctx := struct {
+				*authCtx
+				Error string
+			}{
+				authCtx: ac,
+				Error:   errorMsg,
+			}
+			// Else show login form
+			if err := router.templates["login.html"].Execute(w, &ctx); err != nil {
+				logrus.WithError(err).Error("Failed to execute template")
+				http.Error(w, "rendering failed", http.StatusInternalServerError)
+			}
+		}
 		// Parse form data
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "could not parse form", http.StatusBadRequest)
@@ -229,19 +250,20 @@ func (router *Router) loginForm() http.Handler {
 		// Else validate input
 		user := r.Form.Get("uid")
 		if !userRegex.MatchString(user) {
-			http.Error(w, "user not valid", http.StatusBadRequest)
+			showError("The username is not valid.")
 			return
 		}
 
 		// Check that there is no active login attempt
-		active, err := router.store.HasActiveLogin(user)
+		active, timeout, err := router.store.HasTooManyLogins(user)
 		if err != nil {
 			http.Error(w, "could not check logins", http.StatusInternalServerError)
 			logrus.WithError(err).Error("Failed to check logins")
 			return
 		}
 		if active {
-			http.Error(w, "user has pending login attempt", http.StatusConflict)
+			errorMsg := fmt.Sprintf("Too many concurrent login attempts. Please wait %d seconds before trying again.", timeout)
+			showError(errorMsg)
 			return
 		}
 
@@ -263,10 +285,11 @@ func (router *Router) loginForm() http.Handler {
 		// Render confirm site
 		ctx := struct {
 			*authCtx
-			Key string
+			Key   string
+			Error string
 		}{
-			ac,
-			login.Key,
+			authCtx: ac,
+			Key:     login.Key,
 		}
 		if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
@@ -295,18 +318,42 @@ func (router *Router) loginWithCode() http.Handler {
 		}
 		// Verify key and code
 		key := r.Form.Get("key")
+		showError := func(errorMsg string) {
+			// Show form again
+			ctx := struct {
+				*authCtx
+				Key   string
+				Error string
+			}{
+				authCtx: ac,
+				Key:     key,
+				Error:   errorMsg,
+			}
+			if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
+				logrus.WithError(err).Error("Failed to execute template")
+				http.Error(w, "rendering failed", http.StatusInternalServerError)
+			}
+		}
 		if !loginKeyRegex.MatchString(key) {
-			http.Error(w, "bad login key format", http.StatusBadRequest)
+			showError("Your login key is invalid. Please try again.")
 			return
 		}
 		code := r.Form.Get("code")
 		if !loginCodeRegex.MatchString(code) {
-			http.Error(w, "bad login code format", http.StatusBadRequest)
+			showError("Your code is in the wrong format. Please try again.")
 			return
 		}
 		// Retrieve login attempt with key
-		session, err := router.store.ConfirmLogin(key, code)
-		if err != nil {
+		session, login, err := router.store.ConfirmLogin(key, code)
+		if err == structs.ErrLoginExpired {
+			// Redirect to login form
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		} else if err == structs.ErrLoginWrongCode {
+			errorMsg := fmt.Sprintf("The code you entered is wrong (attempt %d of %d).", login.Attempt, structs.LoginMaxAttempts)
+			showError(errorMsg)
+			return
+		} else if err != nil {
 			http.Error(w, "could not confirm login", http.StatusInternalServerError)
 			logrus.WithError(err).Warn("failed to confirm login")
 			return

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -18,15 +19,18 @@ import (
 )
 
 // tumtalks_login_{key}
+const LoginMaxAttempts = 3
+
 type Login struct {
 	Expiration time.Time `json:"e"`
 	User       string    `json:"u"`
 	Key        string    `json:"k"`
 	Code       string    `json:"c"`
+	Attempt    int       `json:"a"`
 }
 
 func (l *Login) Active() bool {
-	return time.Now().Before(l.Expiration)
+	return time.Now().Before(l.Expiration) && l.Attempt <= LoginMaxAttempts
 }
 
 // tumtalks_session_{key}
@@ -108,38 +112,46 @@ func NewStore(creds *kv.Credentials, prefix string) *Store {
 	}
 }
 
+const maxConcurrentLogins = 3
 const expirationInterval = 15 * time.Minute
 const secretLength = 32
 
-func (store *Store) HasActiveLogin(user string) (bool, error) {
+func (store *Store) HasTooManyLogins(user string) (bool, int, error) {
 	// List all logins
 	loginkeys, _, err := store.kv.List(store.prefix + "_login_")
 	if err != nil {
-		return false, fmt.Errorf("fetch logins: %w", err)
+		return false, -1, fmt.Errorf("fetch logins: %w", err)
 	}
 	// Go through each login and check
+	concurrentLogins := 0
+	minDelay := -1
 	for _, key := range loginkeys {
 		data, err := store.kv.Fetch(key)
 		if err != nil {
-			return false, fmt.Errorf("fetch login: %w", err)
+			return false, -1, fmt.Errorf("fetch login: %w", err)
 		}
 		// Decode login
 		var login Login
 		if err := json.Unmarshal(data, &login); err != nil {
-			return false, fmt.Errorf("decode login: %w", err)
+			return false, -1, fmt.Errorf("decode login: %w", err)
 		}
 		// Drop verification if expired
 		if !login.Active() {
 			if err := store.kv.Delete(key); err != nil {
-				return false, fmt.Errorf("delete login: %w", err)
+				return false, -1, fmt.Errorf("delete login: %w", err)
 			}
+			continue
 		}
 		// Check if we match
 		if login.User == user {
-			return true, nil
+			delay := int(time.Until(login.Expiration).Seconds())
+			if minDelay == -1 || delay < minDelay {
+				minDelay = delay
+			}
+			concurrentLogins++
 		}
 	}
-	return false, nil
+	return concurrentLogins >= maxConcurrentLogins, minDelay, nil
 }
 
 func (store *Store) HasActiveVerification(user string) (bool, error) {
@@ -202,39 +214,63 @@ const loginExpiration = 10 * time.Minute
 const loginKeyLen = 32
 const loginCodeLen = 6
 
-func (store *Store) ConfirmLogin(key, code string) (*Session, error) {
+var ErrLoginInvalidKey = errors.New("invalid key")
+var ErrLoginExpired = errors.New("login expired")
+var ErrLoginWrongCode = errors.New("wrong code")
+
+func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
+	// Check that key is 32-byte hex string
+	if keyBytes, err := hex.DecodeString(key); err != nil || len(keyBytes) != 32 {
+		return nil, nil, ErrLoginInvalidKey
+	}
 	// Fetch login with given key
 	loginKey := fmt.Sprintf("%s_login_%s", store.prefix, key)
 	data, err := store.kv.Fetch(loginKey)
 	if err != nil {
-		return nil, fmt.Errorf("fetch login: %w", err)
+		return nil, nil, fmt.Errorf("fetch login: %w", err)
 	}
 	var login Login
 	if err := json.Unmarshal(data, &login); err != nil {
-		return nil, fmt.Errorf("decode login data: %w", err)
+		return nil, nil, fmt.Errorf("decode login: %w", err)
+	}
+	// Make sure that login isn't expired
+	login.Attempt++
+	if !login.Active() {
+		// Delete login and say login is expired
+		if err := store.kv.Delete(loginKey); err != nil {
+			return nil, nil, fmt.Errorf("delete login: %w", err)
+		}
+		return nil, nil, ErrLoginExpired
+	}
+	data, err = json.Marshal(login)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode login: %w", err)
+	}
+	if err := store.kv.Put(loginKey, data); err != nil {
+		return nil, nil, fmt.Errorf("store login: %w", err)
 	}
 	// Make sure that code matches
 	if login.Code != code {
-		return nil, fmt.Errorf("wrong code")
+		return nil, &login, ErrLoginWrongCode
 	}
 	// Delete login, turn into session
 	if err := store.kv.Delete(loginKey); err != nil {
-		return nil, fmt.Errorf("delete login: %w", err)
+		return nil, nil, fmt.Errorf("delete login: %w", err)
 	}
-	session := &Session{
+	session := Session{
 		Expiration: time.Now().Add(sessionExpiration),
 		User:       login.User,
 		Key:        login.Key,
 	}
 	data, err = json.Marshal(&session)
 	if err != nil {
-		return nil, fmt.Errorf("marshal session: %w", err)
+		return nil, nil, fmt.Errorf("marshal session: %w", err)
 	}
 	sessionKey := fmt.Sprintf("%s_session_%s", store.prefix, key)
 	if err := store.kv.Put(sessionKey, data); err != nil {
-		return nil, fmt.Errorf("store session: %w", err)
+		return nil, nil, fmt.Errorf("store session: %w", err)
 	}
-	return session, nil
+	return &session, &login, nil
 }
 
 func (store *Store) DeleteSession(key string) error {

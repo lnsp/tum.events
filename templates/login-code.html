@@ -1,16 +1,20 @@
 {{ define "title" }}Login &mdash; TUM Talks{{ end }}
 {{ define "content" }}
 <form action="/login?method=code" method="POST" class="p-2">
-  <div class="mb-2">You should have received an email with a confirmation code. Please enter it below.</div>
-  <div class="grid grid-cols-12 gap-2">
+  {{ with .Error }}
+  <div class="mb-3 text-gray-600 flex gap-2 items-center"><span class="flex items-center justify-center w-6 h-6 bg-gray-600 text-white font-bold">!</span>{{ . }}</div>
+  {{ end }}
+  <div class="mb-3">You should have received an email with a confirmation code. Please enter it below.</div>
+  <div class="flex gap-2">
     <input type="hidden" name="key" value="{{ .Key }}">
-    <label for="code" class="col-span-1">Code</label>
-    <div class="col-span-11">
+    <label for="code">Code</label>
+    <div class="flex-grow">
       <input name="code" type="text" class="rounded border border-black w-full max-w-xs" placeholder="123456" required>
     </div>
-    <div class="col-span-full">
-      <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">login</button>
-    </div>
+  </div>
+  <div class="mt-3 flex gap-2">
+    <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">login</button>
+  </div>
   </div>
 </form>
 {{ end }}
