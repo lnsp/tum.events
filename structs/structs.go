@@ -18,7 +18,6 @@ import (
 	"github.com/yuin/goldmark/renderer/html"
 )
 
-// tumtalks_login_{key}
 const LoginMaxAttempts = 3
 
 type Login struct {
@@ -33,7 +32,6 @@ func (l *Login) Active() bool {
 	return time.Now().Before(l.Expiration) && l.Attempt <= LoginMaxAttempts
 }
 
-// tumtalks_session_{key}
 type Session struct {
 	Expiration time.Time `json:"e"`
 	User       string    `json:"u"`
@@ -361,6 +359,61 @@ func (store *Store) Verify(secret string) error {
 		return fmt.Errorf("delete verification: %w", err)
 	}
 	return store.InsertTalk(verif.Talk)
+}
+
+func (store *Store) DeleteTalk(id int64) error {
+	if id == 0 {
+		return fmt.Errorf("talk id required")
+	}
+	talkkey := fmt.Sprintf("%s_talks_%d", store.prefix, id)
+	if err := store.kv.Delete(talkkey); err != nil {
+		return fmt.Errorf("delete talk: %w", err)
+	}
+
+	// Clear cache
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	// Clear hash, drop talk from cache
+	store.hash = nil
+	delete(store.cachemap, id)
+	for i, j := 0, 0; i < len(store.cache); i++ {
+		if store.cache[i].ID != id {
+			store.cache[j] = store.cache[i]
+			j++
+		}
+	}
+	store.cache = store.cache[:len(store.cache)-1]
+	return nil
+}
+
+func (store *Store) UpdateTalk(talk *Talk) error {
+	if talk.ID == 0 {
+		return fmt.Errorf("talk id required")
+	}
+	talkkey := fmt.Sprintf("%s_talks_%d", store.prefix, talk.ID)
+	talkdata, err := json.Marshal(talk)
+	if err != nil {
+		return fmt.Errorf("encode talk: %w", err)
+	}
+	if err := store.kv.Put(talkkey, talkdata); err != nil {
+		return fmt.Errorf("store talk: %w", err)
+	}
+	// Clear cache
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	// Clear hash, drop talk from cache
+	store.hash = nil
+	delete(store.cachemap, talk.ID)
+	for i, j := 0, 0; i < len(store.cache); i++ {
+		if store.cache[i].ID != talk.ID {
+			store.cache[j] = store.cache[i]
+			j++
+		}
+	}
+	store.cache = store.cache[:len(store.cache)-1]
+	return nil
 }
 
 func (store *Store) InsertTalk(talk *Talk) error {

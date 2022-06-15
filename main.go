@@ -88,6 +88,10 @@ var templateFuncs = template.FuncMap{
 	"humandate": func(t time.Time) string {
 		return t.Format("02.01.2006 15:04")
 	},
+	"formdate": func(t time.Time) string {
+		location, _ := time.LoadLocation("Europe/Berlin")
+		return t.In(location).Format(localTimeFormat)
+	},
 	"inc": func(i int) int {
 		return i + 1
 	},
@@ -113,7 +117,9 @@ func (router *Router) setup() {
 	router.mux.Handle("/nextup", router.nextup()).Methods("GET")
 	router.mux.Handle("/categories", router.categories()).Methods("GET")
 	router.mux.Handle("/categories/{category}", router.category()).Methods("GET")
-	router.mux.Handle("/talk/{id}", router.talk()).Methods("GET")
+	router.mux.Handle("/talk", router.talk()).Methods("GET").Queries("id", "{id:[0-9]+}")
+	router.mux.Handle("/edit", router.edit()).Methods("GET").Queries("id", "{id:[0-9]+}")
+	router.mux.Handle("/edit", router.editForm()).Methods("POST").Queries("id", "{id:[0-9]+}")
 	router.mux.Handle("/submit", router.submit()).Methods("GET")
 	router.mux.Handle("/submit", router.submitForm()).Methods("POST")
 	router.mux.Handle("/verify/{secret}", router.confirm()).Methods("GET")
@@ -127,7 +133,7 @@ func (router *Router) setup() {
 	router.mux.Handle("/logout", router.logout()).Methods("POST")
 	// parse templates
 	router.templates = make(map[string]*template.Template)
-	for _, t := range []string{"templates/categories.html", "templates/submit.html", "templates/top.html", "templates/confirm.html", "templates/legal.html", "templates/talk.html", "templates/login.html", "templates/login-code.html"} {
+	for _, t := range []string{"templates/categories.html", "templates/submit.html", "templates/top.html", "templates/confirm.html", "templates/legal.html", "templates/talk.html", "templates/login.html", "templates/login-code.html", "templates/edit.html"} {
 		router.templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(templateFuncs).ParseFS(webTemplates, "templates/base.html", t))
 	}
 }
@@ -217,6 +223,149 @@ func (router *Router) login() http.Handler {
 			logrus.WithError(err).Error("Failed to execute template")
 			http.Error(w, "rendering failed", http.StatusInternalServerError)
 		}
+	})
+}
+
+func (router *Router) edit() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idstr := mux.Vars(r)["id"]
+		id, err := strconv.ParseInt(idstr, 10, 64)
+		if err != nil {
+			http.Error(w, "bad id format", http.StatusBadRequest)
+			return
+		}
+		ac := router.authCtxFromRequest(w, r)
+		if !ac.Authenticated() {
+			http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
+			return
+		}
+		// Get post with given ID
+		talk, err := router.store.Talk(id)
+		if talk == nil || err != nil {
+			http.Error(w, "could not find talk", http.StatusNotFound)
+			return
+		}
+		if talk.User != ac.Login {
+			http.Error(w, "not the author of the talk", http.StatusForbidden)
+			return
+		}
+		// Context should already
+		ctx := struct {
+			*authCtx
+			Talk       *structs.Talk
+			Categories []string
+		}{
+			authCtx:    ac,
+			Talk:       talk,
+			Categories: talkCategories,
+		}
+		if err := router.templates["edit.html"].Execute(w, &ctx); err != nil {
+			logrus.WithError(err).Error("Failed to execute template")
+			http.Error(w, "rendering failed", http.StatusInternalServerError)
+		}
+	})
+}
+
+func (router *Router) editForm() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idstr := mux.Vars(r)["id"]
+		id, err := strconv.ParseInt(idstr, 10, 64)
+		if err != nil {
+			http.Error(w, "bad id format", http.StatusBadRequest)
+			return
+		}
+		ac := router.authCtxFromRequest(w, r)
+		if !ac.Authenticated() {
+			http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
+			return
+		}
+		// Get post with given ID
+		talk, err := router.store.Talk(id)
+		if talk == nil || err != nil {
+			http.Error(w, "could not find talk", http.StatusNotFound)
+			return
+		}
+		if talk.User != ac.Login {
+			http.Error(w, "not the author of the talk", http.StatusForbidden)
+			return
+		}
+		// Parse form data
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form data", http.StatusBadRequest)
+			return
+		}
+		// If we want to delete the post, thats easy!
+		if delete := r.Form.Get("delete"); delete != "" {
+			if err := router.store.DeleteTalk(id); err != nil {
+				http.Error(w, "could not delete talk", http.StatusInternalServerError)
+				logrus.WithError(err).Error("Failed to delete talk")
+				return
+			}
+			return
+		}
+		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
+		title := r.Form.Get("title")
+		if len(strings.TrimSpace(title)) < 10 || !titleRegex.MatchString(title) {
+			http.Error(w, "title not valid", http.StatusBadRequest)
+			return
+		}
+		talk.Title = title
+
+		// Make sure that we don't go over the character limit
+		body := r.Form.Get("body")
+		if len(body) > bodyCharLimit {
+			http.Error(w, "body has more than 10000 characters", http.StatusBadRequest)
+			return
+		}
+		talk.Body = body
+
+		// Verify that either link is valid URL and has http scheme
+		link := r.Form.Get("url")
+		parsedLink, err := url.Parse(link)
+		if link != "" && err != nil {
+			http.Error(w, "link not valid", http.StatusBadRequest)
+			return
+		} else if link != "" && !linkSchemeRegex.MatchString(parsedLink.Scheme) {
+			http.Error(w, "link must be http or https", http.StatusBadRequest)
+			return
+		}
+		talk.Link = link
+
+		// Verify that category is in categories list
+		category := r.Form.Get("category")
+		categoryExists := false
+		for i := range talkCategories {
+			if talkCategories[i] == category {
+				categoryExists = true
+				break
+			}
+		}
+		if !categoryExists {
+			http.Error(w, "category does not exist", http.StatusBadRequest)
+			return
+		}
+		talk.Category = category
+
+		// Verify that date is in the future
+		location, _ := time.LoadLocation("Europe/Berlin")
+		date, err := time.ParseInLocation(localTimeFormat, r.Form.Get("date"), location)
+		if err != nil {
+			http.Error(w, "could not parse datetime", http.StatusBadRequest)
+			return
+		}
+		if time.Since(date) >= 0 {
+			http.Error(w, "date has to be in the future", http.StatusBadRequest)
+			return
+		}
+		talk.Date = date
+		// Update talk data
+		if err := router.store.UpdateTalk(talk); err != nil {
+			http.Error(w, "could not update talk", http.StatusInternalServerError)
+			logrus.WithError(err).Error("Failed to update talk")
+			return
+		}
+		// Redirect to talk page
+		http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
 	})
 }
 
@@ -440,7 +589,7 @@ func (router *Router) talk() http.Handler {
 			return
 		}
 		talk, err := router.store.Talk(id)
-		if err != nil {
+		if talk == nil || err != nil {
 			http.Error(w, "could not fetch talk", http.StatusInternalServerError)
 			logrus.WithError(err).Error("Failed to fetch talk")
 			return

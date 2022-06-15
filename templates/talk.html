@@ -6,7 +6,7 @@
     <div>
       <div class="">
         <a class="flex items-center hover:underline visited:text-gray-500"
-           href="{{ if .Talk.Link }}{{ .Talk.Link }}{{ else }}/talk/{{ .Talk.ID }}{{ end }}">
+           href="{{ if .Talk.Link }}{{ .Talk.Link }}{{ else }}/talk?id={{ .Talk.ID }}{{ end }}">
           {{ .Talk.Title }}
         </a>
       </div>

@@ -1,13 +1,14 @@
 {{ define "title" }}IN.TUM Talks{{ end }}
 {{ define "content" }}
+{{ $login := .Login }}
 <div class="py-2 flex gap-2 flex-col">
   {{ range $i, $t := .Talks }}
   <div class="flex gap-2 items-center">
-    <div class="w-6 text-right text text-gray-500">{{ $i | inc }}.</div>
+    <div class="w-6 flex-shrink-0 text-right text text-gray-500">{{ $i | inc }}.</div>
     <div class="flex flex-col">
       <div class="">
         <a class="flex items-center hover:underline visited:text-gray-500"
-           href="{{ if $t.Link }}{{ $t.Link }}{{ else }}/talk/{{ $t.ID }}{{ end }}">
+           href="{{ if $t.Link }}{{ $t.Link }}{{ else }}/talk?id={{ $t.ID }}{{ end }}">
           {{ $t.Title }}
         </a>
       </div>
@@ -19,7 +20,12 @@
         {{ if $t.Body }}
         |
         <a class="text-gray-500 text-xs hover:underline"
-           href="/talk/{{ $t.ID }}">details</a>
+           href="/talk?id={{ $t.ID }}">details</a>
+        {{ end }}
+        {{ if eq $t.User $login }}
+        |
+        <a class="text-gray-500 text-xs hover:underline"
+           href="/edit?id={{ $t.ID }}">edit</a>
         {{ end }}
       </div>
     </div>

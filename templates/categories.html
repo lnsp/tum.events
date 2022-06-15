@@ -3,8 +3,8 @@
 {{ if .Category }}
 <div class="p-2 flex flex-col gap-2">
   {{ range .Talks }}
-  <a class="flex gap-2 items-center hover:underline visited:text-gray-500" href="{{ .Link }}">
-    <div class="text-center">{{ .Date | humandate }}</div>
+  <a class="flex gap-2 hover:underline visited:text-gray-500" href="{{ .Link }}">
+    <div class="text-left flex-shrink-0 w-24">{{ .Date | humandate }}</div>
     <div class="">{{ .Title }}</div>
   </a>
   {{ end }}

@@ -1,39 +1,36 @@
-{{ define "title" }}Submit &mdash; IN.TUM Talks{{ end }}
+{{ define "title" }}Edit &mdash; IN.TUM Talks{{ end }}
 {{ define "content" }}
-<form action="/submit" method="POST" class="p-2">
+<form action="" method="POST" class="p-2">
   <div class="grid grid-cols-12 gap-2">
     <label for="title" class="col-span-2">Title</label>
     <div class="col-span-10">
-      <input name="title" type="text" placeholder="" class="rounded border border-black w-full max-w-md" required>
+      <input name="title" type="text" placeholder="" value="{{ .Talk.Title }}" class="rounded border border-black w-full max-w-md" required>
     </div>
     <label for="url" class="col-span-2">Link</label>
     <div class="col-span-10">
-      <input name="url" type="url" class="rounded border border-black w-full max-w-md" placeholder="https://in.tum.de/">
+      <input name="url" type="url" class="rounded border border-black w-full max-w-md" value="{{ .Talk.Link }}" placeholder="https://in.tum.de/">
     </div>
     <label for="body" class="col-span-2">Text</label>
     <div class="col-span-10">
-      <textarea name="body" rows="5" class="rounded border border-black w-full max-w-md"></textarea>
+      <textarea name="body" rows="5" class="rounded border border-black w-full max-w-md">{{ .Talk.Body }}</textarea>
     </div>
     <label for="category" class="col-span-2 truncate">Category</label>
     <div class="col-span-10">
       <select name="category" class="rounded border border-black w-full max-w-xs">
+        {{ $tc := .Talk.Category }}
         {{ range .Categories }}
-        <option value="{{ . }}">{{ . }}</option>
+        <option value="{{ . }}" {{ if eq . $tc }}selected{{ end }}>{{ . }}</option>
         {{ end }}
       </select>
     </div>
     <label for="date" class="col-span-2">Date</label>
     <div class="col-span-10">
-      <input name="date" type="datetime-local" class="rounded border border-black w-full max-w-xs" required>
+      <input name="date" type="datetime-local" value="{{ .Talk.Date | formdate }}" class="rounded border border-black w-full max-w-xs" required>
     </div>
-    {{ if .Login }}
-    <input type="hidden" name="uid" value="{{ .Login }}">
-    {{ else }}
-    <label for="uid" class="col-span-2">TUM User ID</label>
+    <label for="delete" class="col-span-2">Delete talk?</label>
     <div class="col-span-10">
-      <input name="uid" type="text" class="rounded border border-black w-full max-w-xs" placeholder="go42tum" required>
+      <input type="checkbox" name="delete">
     </div>
-    {{ end }}
     <div class="col-span-full">
       <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">submit</button>
     </div>
