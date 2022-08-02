@@ -473,7 +473,6 @@ func (store *Store) updateCache(keys []string, hash []byte) error {
 		if j, ok := cached[key]; ok {
 			// Copy over from cache
 			talks[i] = store.cache[j]
-			continue
 		} else {
 			// Fetch new talk
 			talkdata, err := store.kv.Fetch(key)
@@ -484,7 +483,6 @@ func (store *Store) updateCache(keys []string, hash []byte) error {
 			if err := json.Unmarshal(talkdata, talks[i]); err != nil {
 				return fmt.Errorf("parse talk: %w", err)
 			}
-
 		}
 		// TODO(lnsp): Compute talk scores and ranks
 		talks[i].Rank = int64(i + 1)
