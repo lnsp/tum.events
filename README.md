@@ -9,7 +9,7 @@ This is the source repository for the TUM Events service.
 
 ## Architecture
 
-TUM Events uses KV to store all talk data. Talks are stored in the format of `{prefix}_talks_{talkid}`.
+TUM Events uses Valar KV to store all talk data. Talks are stored in the format of `{prefix}_talks_{talkid}`.
 The talk structure uses a minimal JSON format where a single character identifies a field. It is defined using
 the following Go structure.
 
@@ -43,29 +43,36 @@ Thus, the following JSON block is a valid Talk doc.
 
 Talks are synchronized if and only if the talk cache is empty OR the talk doc list changes.
 
+### Login
+
+```go
+type Login struct {
+	Expiration time.Time `json:"e"`
+	User       string    `json:"u"`
+	Key        string    `json:"k"`
+	Code       string    `json:"c"`
+	Attempt    int       `json:"a"`
+}
+```
+
 ### Sessions
 
 A session represents an authenticated user.
 
 ```go
-type SessionVerification struct {
-	Expiration time.Time
-	Code string
-	User string
+type Session struct {
+	Expiration time.Time `json:"e"`
+	User       string    `json:"u"`
+	Key        string    `json:"k"`
 }
 ```
 
-```go
-type Session struct {
-	Expiration time.Time
+### Verification
 
-	ID       int64     `json:"i,omitempty"`
-	Rank     int64     `json:"-"`
-	User     string    `json:"u"`
-	Title    string    `json:"t"`
-	Category string    `json:"c"`
-	Date     time.Time `json:"d"`
-	Link     string    `json:"l,omitempty"`
-	Body     string    `json:"b,omitempty"`
+```go
+
+type Verification struct {
+	Expiration time.Time `json:"e"`
+	Talk       *Talk     `json:"t"`
 }
 ```
