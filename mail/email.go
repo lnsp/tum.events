@@ -67,7 +67,7 @@ func (mp *Provider) SendLogin(user, code string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	message := mp.mg.NewMessage(mp.sender, "Login - IN.TUM Talks", "", user+"@"+mp.userdomain)
+	message := mp.mg.NewMessage(mp.sender, "Login - TUM Events", "", user+"@"+mp.userdomain)
 	message.SetHtml(buf.String())
 	if _, _, err := mp.mg.Send(ctx, message); err != nil {
 		return fmt.Errorf("send mail: %w", err)
@@ -91,7 +91,7 @@ func (mp *Provider) SendVerification(user, link string, talk *structs.Talk) erro
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	message := mp.mg.NewMessage(mp.sender, "Please verify your talk - IN.TUM Talks", "", user+"@"+mp.userdomain)
+	message := mp.mg.NewMessage(mp.sender, "Please verify your talk - TUM Events", "", user+"@"+mp.userdomain)
 	message.SetHtml(buf.String())
 	if _, _, err := mp.mg.Send(ctx, message); err != nil {
 		return fmt.Errorf("send mail: %w", err)

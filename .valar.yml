@@ -17,7 +17,7 @@ deployment:
           value: tumtalks
           secret: false
         - key: MAIL_SENDER
-          value: IN.TUM Talks <tumtalks@noreply.valar.dev>
+          value: TUM Events <tumevents@noreply.valar.dev>
           secret: false
         - key: MAIL_DOMAIN
           value: noreply.valar.dev
@@ -29,7 +29,7 @@ deployment:
           value: mytum.de
           secret: false
         - key: ROUTER_PUBLICURL
-          value: https://lennart-tumtalks.valar.app
+          value: https://tum.events
           secret: false
         - key: ROUTER_HTTPSONLY
           value: "true"

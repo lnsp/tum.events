@@ -1,6 +1,6 @@
-# IN.TUM talks
+# TUM Events
 
-This is the source repository for the IN.TUM talks service.
+This is the source repository for the TUM Events service.
 
 ## Public sources
 - https://www.net.in.tum.de/talks/
@@ -9,7 +9,7 @@ This is the source repository for the IN.TUM talks service.
 
 ## Architecture
 
-IN.TUM talks uses KV to store all talk data. Talks are stored in the format of `{prefix}_talks_{talkid}`.
+TUM Events uses KV to store all talk data. Talks are stored in the format of `{prefix}_talks_{talkid}`.
 The talk structure uses a minimal JSON format where a single character identifies a field. It is defined using
 the following Go structure.
 
