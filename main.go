@@ -873,6 +873,19 @@ func NewRouter(publicURL *url.URL, store *structs.Store, mail *mail.Provider, ht
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Make sure to redirect users to default domain
+	if router.publicURL.Hostname() != r.Host {
+		// Issue redirect
+		http.Redirect(w, r, router.publicURL.String(), http.StatusSeeOther)
+		logrus.WithFields(logrus.Fields{
+			"path":     r.URL.Path,
+			"method":   r.Method,
+			"got":      r.Host,
+			"expected": router.publicURL.Hostname(),
+		}).Info("Redirected request to public base URL")
+		return
+	}
+
 	s := time.Now()
 	router.mux.ServeHTTP(w, r)
 	d := time.Since(s)
