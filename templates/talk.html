@@ -15,6 +15,14 @@
         |
         <a class="text-gray-500 text-xs hover:underline"
            href="/categories/{{ .Talk.Category }}">[{{ .Talk.Category }}]</a>
+        {{ if eq .Talk.User .Login }}
+        |
+        <a class="text-gray-500 text-xs hover:underline"
+           href="/edit?id={{ .Talk.ID }}">edit</a>
+        {{ end }}
+        |
+        <a class="text-gray-500 text-xs hover:underline"
+           href="/talk?id={{ .Talk.ID }}&format=ics">download</a>
       </div>
     </div>
   </div>

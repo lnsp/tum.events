@@ -9,6 +9,7 @@ require (
 )
 
 require (
+	github.com/arran4/golang-ical v0.0.0-20220517104411-fd89fefb0182 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/gobuffalo/envy v1.10.1 // indirect
 	github.com/gorilla/css v1.0.0 // indirect

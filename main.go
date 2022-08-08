@@ -21,6 +21,8 @@ import (
 	"github.com/sirupsen/logrus"
 
 	_ "time/tzdata"
+
+	ics "github.com/arran4/golang-ical"
 )
 
 //go:embed favicon.png
@@ -117,6 +119,7 @@ func (router *Router) setup() {
 	router.mux.Handle("/nextup", router.nextup()).Methods("GET")
 	router.mux.Handle("/categories", router.categories()).Methods("GET")
 	router.mux.Handle("/categories/{category}", router.category()).Methods("GET")
+	router.mux.Handle("/talk", router.downloadTalk()).Methods("GET").Queries("id", "{id:[0-9]+}", "format", "ics")
 	router.mux.Handle("/talk", router.talk()).Methods("GET").Queries("id", "{id:[0-9]+}")
 	router.mux.Handle("/edit", router.edit()).Methods("GET").Queries("id", "{id:[0-9]+}")
 	router.mux.Handle("/edit", router.editForm()).Methods("POST").Queries("id", "{id:[0-9]+}")
@@ -581,6 +584,40 @@ func (router *Router) authCtxFromRequest(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+func (router *Router) downloadTalk() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+		if err != nil {
+			http.Error(w, "invalid talk id", http.StatusBadRequest)
+			return
+		}
+		talk, err := router.store.Talk(id)
+		if talk == nil || err != nil {
+			http.Error(w, "could not fetch talk", http.StatusInternalServerError)
+			logrus.WithError(err).Error("Failed to fetch talk")
+			return
+		} else if talk == nil {
+			http.Error(w, "talk not found", http.StatusNotFound)
+			return
+		}
+		// Encode talk as ICS
+		cal := ics.NewCalendar()
+		cal.SetMethod(ics.MethodRequest)
+		event := cal.AddEvent(fmt.Sprintf("%d@tum.events", id))
+		event.SetCreatedTime(time.Now())
+		event.SetStartAt(talk.Date)
+		event.SetEndAt(talk.Date.Add(time.Hour))
+		event.SetSummary(talk.Title)
+		event.SetDescription(talk.Body)
+		event.SetURL(talk.Link)
+
+		// Write out as download
+		contentDisposition := fmt.Sprintf("attachment; filename=\"tumevent%d.ics\"", talk.ID)
+		w.Header().Set("Content-Disposition", contentDisposition)
+		cal.SerializeTo(w)
+	})
+}
+
 func (router *Router) talk() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
@@ -604,6 +641,7 @@ func (router *Router) talk() http.Handler {
 			Category string
 			Body     template.HTML
 			Link     string
+			User     string
 		}
 		ctx := struct {
 			*authCtx
@@ -617,6 +655,7 @@ func (router *Router) talk() http.Handler {
 				Category: talk.Category,
 				Link:     talk.Link,
 				Body:     template.HTML(talk.RenderAsHTML()),
+				User:     talk.User,
 			},
 		}
 		if err := router.templates["talk.html"].Execute(w, &ctx); err != nil {
