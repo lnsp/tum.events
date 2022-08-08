@@ -34,3 +34,6 @@ deployment:
         - key: ROUTER_HTTPSONLY
           value: "true"
           secret: false
+        - key: ROUTER_DOMAINONLY
+          value: "true"
+          secret: false

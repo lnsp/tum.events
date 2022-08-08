@@ -73,7 +73,8 @@ func main() {
 		logrus.WithError(err).Fatal("public url is invalid")
 	}
 	httpsOnly := os.Getenv("ROUTER_HTTPSONLY") != ""
-	router := NewRouter(publicURL, store, mail, httpsOnly)
+	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
+	router := NewRouter(publicURL, store, mail, httpsOnly, publicDomainOnly)
 	router.setup()
 	server := &http.Server{
 		Addr:         ":8080",
@@ -103,11 +104,12 @@ var templateFuncs = template.FuncMap{
 var tailwindStyles []byte
 
 type Router struct {
-	publicURL *url.URL
-	mux       *mux.Router
-	store     *structs.Store
-	mail      *mail.Provider
-	httpsOnly bool
+	publicURL        *url.URL
+	mux              *mux.Router
+	store            *structs.Store
+	mail             *mail.Provider
+	httpsOnly        bool
+	publicDomainOnly bool
 
 	templates map[string]*template.Template
 }
@@ -901,26 +903,27 @@ func (router *Router) category() http.Handler {
 	})
 }
 
-func NewRouter(publicURL *url.URL, store *structs.Store, mail *mail.Provider, httpsOnly bool) *Router {
+func NewRouter(publicURL *url.URL, store *structs.Store, mail *mail.Provider, httpsOnly, publicDomainOnly bool) *Router {
 	return &Router{
-		mux:       mux.NewRouter(),
-		publicURL: publicURL,
-		store:     store,
-		mail:      mail,
-		httpsOnly: httpsOnly,
+		mux:              mux.NewRouter(),
+		publicURL:        publicURL,
+		store:            store,
+		mail:             mail,
+		httpsOnly:        httpsOnly,
+		publicDomainOnly: publicDomainOnly,
 	}
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Make sure to redirect users to default domain
-	if router.publicURL.Hostname() != r.Host {
+	if router.publicDomainOnly && router.publicURL.Host != r.Host {
 		// Issue redirect
 		http.Redirect(w, r, router.publicURL.String(), http.StatusSeeOther)
 		logrus.WithFields(logrus.Fields{
 			"path":     r.URL.Path,
 			"method":   r.Method,
 			"got":      r.Host,
-			"expected": router.publicURL.Hostname(),
+			"expected": router.publicURL.Host,
 		}).Info("Redirected request to public base URL")
 		return
 	}
