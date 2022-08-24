@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -58,6 +59,10 @@ var talkCategories = []string{
 const authCookieKey = "auth"
 
 func main() {
+	apiTokens := map[string]struct{}{}
+	for _, t := range strings.Fields(os.Getenv("APITOKENS")) {
+		apiTokens[t] = struct{}{}
+	}
 	mail := mail.NewProvider(&mail.Config{
 		Sender:       os.Getenv("MAIL_SENDER"),
 		SenderDomain: os.Getenv("MAIL_DOMAIN"),
@@ -74,7 +79,7 @@ func main() {
 	}
 	httpsOnly := os.Getenv("ROUTER_HTTPSONLY") != ""
 	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
-	router := NewRouter(publicURL, store, mail, httpsOnly, publicDomainOnly)
+	router := NewRouter(publicURL, store, mail, httpsOnly, publicDomainOnly, apiTokens)
 	router.setup()
 	server := &http.Server{
 		Addr:         ":8080",
@@ -110,6 +115,7 @@ type Router struct {
 	mail             *mail.Provider
 	httpsOnly        bool
 	publicDomainOnly bool
+	apiTokens        map[string]struct{}
 
 	templates map[string]*template.Template
 }
@@ -136,6 +142,11 @@ func (router *Router) setup() {
 	router.mux.Handle("/login", router.login()).Methods("GET")
 	router.mux.Handle("/login", router.loginForm()).Methods("POST")
 	router.mux.Handle("/logout", router.logout()).Methods("POST")
+
+	// setup api routes
+	apiRouter := router.mux.PathPrefix("/api").Subrouter()
+	apiRouter.Handle("/talks", router.apiTalks()).Methods("GET")
+
 	// parse templates
 	router.templates = make(map[string]*template.Template)
 	for _, t := range []string{"templates/categories.html", "templates/submit.html", "templates/top.html", "templates/confirm.html", "templates/legal.html", "templates/talk.html", "templates/login.html", "templates/login-code.html", "templates/edit.html"} {
@@ -854,6 +865,34 @@ func (router *Router) categories() http.Handler {
 	})
 }
 
+func (router *Router) apiWrapper(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("X-Token")
+		if _, ok := router.apiTokens[token]; !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func (router *Router) apiTalks() http.Handler {
+	return router.apiWrapper(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			talks, err := router.store.UpcomingTalks()
+			if err != nil {
+				logrus.WithError(err).Error("Failed to get upcoming talks")
+				http.Error(w, "failed to get data", http.StatusInternalServerError)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(talks); err != nil {
+				logrus.WithError(err).Error("Failed to encode response")
+				http.Error(w, "failed to encode response", http.StatusInternalServerError)
+				return
+			}
+		}))
+}
+
 func (router *Router) category() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get category
@@ -903,7 +942,7 @@ func (router *Router) category() http.Handler {
 	})
 }
 
-func NewRouter(publicURL *url.URL, store *structs.Store, mail *mail.Provider, httpsOnly, publicDomainOnly bool) *Router {
+func NewRouter(publicURL *url.URL, store *structs.Store, mail *mail.Provider, httpsOnly, publicDomainOnly bool, apiTokens map[string]struct{}) *Router {
 	return &Router{
 		mux:              mux.NewRouter(),
 		publicURL:        publicURL,
@@ -911,6 +950,7 @@ func NewRouter(publicURL *url.URL, store *structs.Store, mail *mail.Provider, ht
 		mail:             mail,
 		httpsOnly:        httpsOnly,
 		publicDomainOnly: publicDomainOnly,
+		apiTokens:        apiTokens,
 	}
 }
 

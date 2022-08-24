@@ -37,3 +37,6 @@ deployment:
         - key: ROUTER_DOMAINONLY
           value: "true"
           secret: false
+        - key: APITOKENS
+          value: 7fFM1FB92HWNlNmIhrt8x3CnSutPmGXD45jrPepfTrpZyM95VpLqOZVM6+fgwqIY56Ewfm8zr/FvrOTRKZJJYQCAM2RztKpq7xlhDLqhjkeRV+GxM+LiP8UBEn4=
+          secret: true
