@@ -167,7 +167,7 @@ func (router *Router) submit() http.Handler {
 }
 
 var userRegex = regexp.MustCompile(`^[a-z]{2}[0-9]{2}[a-z]{3}$`)
-var titleRegex = regexp.MustCompile(`^[\d\s\w?!:,]{10,128}$`)
+var titleRegex = regexp.MustCompile(`^[\d\s\w?!:,\-]{10,128}$`)
 var linkSchemeRegex = regexp.MustCompile(`^http(s)?$`)
 
 const bodyCharLimit = 10000
