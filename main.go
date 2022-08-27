@@ -877,8 +877,7 @@ func (router *Router) apiWrapper(handler http.Handler) http.Handler {
 }
 
 func (router *Router) apiTalks() http.Handler {
-	return router.apiWrapper(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			talks, err := router.store.UpcomingTalks()
 			if err != nil {
 				logrus.WithError(err).Error("Failed to get upcoming talks")
@@ -890,7 +889,7 @@ func (router *Router) apiTalks() http.Handler {
 				http.Error(w, "failed to encode response", http.StatusInternalServerError)
 				return
 			}
-		}))
+		})
 }
 
 func (router *Router) category() http.Handler {
