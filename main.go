@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,13 +59,19 @@ var talkCategories = []string{
 	"formal-methods",
 }
 
+//go:generate sh -c "/bin/echo -n $VALAR_BUILD > version.txt"
+//go:embed version.txt
+var buildID string
+
 const authCookieKey = "auth"
 
 func main() {
-	apiTokens := map[string]struct{}{}
-	for _, t := range strings.Fields(os.Getenv("APITOKENS")) {
-		apiTokens[t] = struct{}{}
-	}
+	// Setup nice logging
+	logrus.SetReportCaller(true)
+	logrus.SetFormatter(&logrus.TextFormatter{CallerPrettyfier: func(f *runtime.Frame) (string, string) {
+		return "", fmt.Sprintf("%s:%d", path.Base(f.File), f.Line)
+	}})
+
 	mail := mail.NewMailgunProvider(&mail.MailgunConfig{
 		Sender:       os.Getenv("MAIL_SENDER"),
 		SenderDomain: os.Getenv("MAIL_DOMAIN"),
@@ -161,14 +168,14 @@ func (router *Router) setup() {
 
 func (router *Router) submit() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ac := router.authCtxFromRequest(w, r)
+		ac := router.baseCtx(w, r)
 		if !ac.Authenticated() {
 			// Redirect to login form
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 		context := struct {
-			*authCtx
+			baseCtx
 			Categories []string
 		}{ac, talkCategories}
 
@@ -187,12 +194,13 @@ const localTimeFormat = "2006-01-02T15:04"
 
 func (router *Router) confirm() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ac := router.baseCtx(w, r)
 		if err := router.templates["confirm.html"].Execute(w, &struct {
-			*authCtx
+			baseCtx
 			Talk bool
-		}{router.authCtxFromRequest(w, r), true}); err != nil {
+		}{ac, true}); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
 		}
 	})
 }
@@ -224,9 +232,9 @@ func (router *Router) favicon() http.Handler {
 
 func (router *Router) legal() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := router.templates["legal.html"].Execute(w, router.authCtxFromRequest(w, r)); err != nil {
+		if err := router.templates["legal.html"].Execute(w, router.baseCtx(w, r)); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
 		}
 	})
 }
@@ -234,21 +242,21 @@ func (router *Router) legal() http.Handler {
 func (router *Router) login() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if session is already valid, then redirect back to home page
-		ac := router.authCtxFromRequest(w, r)
+		ac := router.baseCtx(w, r)
 		if ac.Authenticated() {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
 		ctx := struct {
-			*authCtx
+			baseCtx
 			Error string
 		}{
-			authCtx: ac,
+			baseCtx: ac,
 		}
 		// Else show login form
 		if err := router.templates["login.html"].Execute(w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
 		}
 	})
 }
@@ -261,7 +269,7 @@ func (router *Router) edit() http.Handler {
 			http.Error(w, "bad id format", http.StatusBadRequest)
 			return
 		}
-		ac := router.authCtxFromRequest(w, r)
+		ac := router.baseCtx(w, r)
 		if !ac.Authenticated() {
 			http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
 			return
@@ -278,17 +286,17 @@ func (router *Router) edit() http.Handler {
 		}
 		// Context should already
 		ctx := struct {
-			*authCtx
+			baseCtx
 			Talk       *structs.Talk
 			Categories []string
 		}{
-			authCtx:    ac,
+			baseCtx:    ac,
 			Talk:       talk,
 			Categories: talkCategories,
 		}
 		if err := router.templates["edit.html"].Execute(w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
 		}
 	})
 }
@@ -301,7 +309,7 @@ func (router *Router) editForm() http.Handler {
 			http.Error(w, "bad id format", http.StatusBadRequest)
 			return
 		}
-		ac := router.authCtxFromRequest(w, r)
+		ac := router.baseCtx(w, r)
 		if !ac.Authenticated() {
 			http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
 			return
@@ -399,17 +407,17 @@ func (router *Router) editForm() http.Handler {
 func (router *Router) loginForm() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if session is already valid, then redirect back to home page
-		ac := router.authCtxFromRequest(w, r)
+		ac := router.baseCtx(w, r)
 		if ac.Authenticated() {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
 		showError := func(errorMsg string, status int) {
 			ctx := struct {
-				*authCtx
+				baseCtx
 				Error string
 			}{
-				authCtx: ac,
+				baseCtx: ac,
 				Error:   errorMsg,
 			}
 			// Else show login form
@@ -439,10 +447,10 @@ func (router *Router) loginForm() http.Handler {
 		}
 		// Render confirm site
 		ctx := struct {
-			*authCtx
+			baseCtx
 			Key string
 		}{
-			authCtx: ac,
+			baseCtx: ac,
 			Key:     login.Key,
 		}
 		if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
@@ -461,7 +469,7 @@ const sessionCookieExpiration = time.Hour * 24 * 30
 func (router *Router) loginWithCode() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if session is already valid, then redirect back to home page
-		ac := router.authCtxFromRequest(w, r)
+		ac := router.baseCtx(w, r)
 		if ac.Authenticated() {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 		}
@@ -475,17 +483,17 @@ func (router *Router) loginWithCode() http.Handler {
 		showError := func(errorMsg string) {
 			// Show form again
 			ctx := struct {
-				*authCtx
+				baseCtx
 				Key   string
 				Error string
 			}{
-				authCtx: ac,
+				baseCtx: ac,
 				Key:     key,
 				Error:   errorMsg,
 			}
 			if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
 				logrus.WithError(err).Error("Failed to execute template")
-				http.Error(w, "rendering failed", http.StatusInternalServerError)
+				return
 			}
 		}
 		if !loginKeyRegex.MatchString(key) {
@@ -526,7 +534,7 @@ func (router *Router) loginWithCode() http.Handler {
 func (router *Router) logout() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if session is valid, else redirect to homepage
-		ac := router.authCtxFromRequest(w, r)
+		ac := router.baseCtx(w, r)
 		if !ac.Authenticated() {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
@@ -545,12 +553,13 @@ func (router *Router) logout() http.Handler {
 
 const sessionCookie = "session"
 
-type authCtx struct {
+type baseCtx struct {
+	Build      string
 	Login      string
 	SessionKey string
 }
 
-func (a *authCtx) Authenticated() bool {
+func (a *baseCtx) Authenticated() bool {
 	return a.Login != ""
 }
 
@@ -561,29 +570,29 @@ func dropSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-func (router *Router) authCtxFromRequest(w http.ResponseWriter, r *http.Request) *authCtx {
+func (router *Router) baseCtx(w http.ResponseWriter, r *http.Request) baseCtx {
+	ctx := baseCtx{Build: buildID}
 	// Get request session cookie
 	cookie, err := r.Cookie(sessionCookie)
 	if err == http.ErrNoCookie {
-		return &authCtx{}
+		return ctx
 	}
 	// Get session key from cookie
 	key := cookie.Value
 	// Make sure that key is valid session key
 	if !loginKeyRegex.MatchString(key) {
 		dropSessionCookie(w)
-		return &authCtx{}
+		return ctx
 	}
 	user, err := router.store.VerifySession(key)
 	if err != nil {
 		// Delete session cookie
 		dropSessionCookie(w)
-		return &authCtx{}
+		return ctx
 	}
-	return &authCtx{
-		Login:      user,
-		SessionKey: key,
-	}
+	ctx.Login = user
+	ctx.SessionKey = key
+	return ctx
 }
 
 func (router *Router) downloadTalk() http.Handler {
@@ -646,10 +655,10 @@ func (router *Router) talk() http.Handler {
 			User     string
 		}
 		ctx := struct {
-			*authCtx
+			baseCtx
 			Talk ctxTalk
 		}{
-			router.authCtxFromRequest(w, r),
+			router.baseCtx(w, r),
 			ctxTalk{
 				ID:       talk.ID,
 				Title:    talk.Title,
@@ -662,7 +671,6 @@ func (router *Router) talk() http.Handler {
 		}
 		if err := router.templates["talk.html"].Execute(w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
 			return
 		}
 	})
@@ -670,7 +678,7 @@ func (router *Router) talk() http.Handler {
 
 func (router *Router) submitForm() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ac := router.authCtxFromRequest(w, r)
+		ac := router.baseCtx(w, r)
 		// Parse form data
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "could not parse form", http.StatusBadRequest)
@@ -756,15 +764,15 @@ func (router *Router) top() http.Handler {
 		sort.Slice(talks, func(i, j int) bool { return talks[i].Rank < talks[j].Rank })
 
 		context := struct {
-			*authCtx
+			baseCtx
 			Talks []*structs.Talk
 		}{
-			router.authCtxFromRequest(w, r),
+			router.baseCtx(w, r),
 			talks,
 		}
 		if err := router.templates["top.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
 		}
 	})
 }
@@ -781,15 +789,15 @@ func (router *Router) nextup() http.Handler {
 
 		// Put into top context
 		context := struct {
-			*authCtx
+			baseCtx
 			Talks []*structs.Talk
 		}{
-			router.authCtxFromRequest(w, r),
+			router.baseCtx(w, r),
 			talks,
 		}
 		if err := router.templates["top.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
 		}
 	})
 }
@@ -798,17 +806,17 @@ func (router *Router) categories() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Put into top context
 		context := struct {
-			*authCtx
+			baseCtx
 			Category   bool
 			Categories []string
 		}{
-			router.authCtxFromRequest(w, r),
+			router.baseCtx(w, r),
 			false,
 			talkCategories,
 		}
 		if err := router.templates["categories.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
 		}
 	})
 }
@@ -847,17 +855,17 @@ func (router *Router) category() http.Handler {
 		sort.Slice(talks, func(i, j int) bool { return talks[i].Date.Before(talks[j].Date) })
 
 		context := struct {
-			*authCtx
+			baseCtx
 			Category string
 			Talks    []*structs.Talk
 		}{
-			authCtx:  router.authCtxFromRequest(w, r),
+			baseCtx:  router.baseCtx(w, r),
 			Category: category,
 			Talks:    talks,
 		}
 		if err := router.templates["categories.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			return
 		}
 	})
 }

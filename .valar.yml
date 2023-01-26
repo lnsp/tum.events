@@ -6,7 +6,10 @@ build:
         - .valar.yml
         - .git
         - node_modules
-    environment: []
+    environment:
+        - key: GO_GENERATE
+          value: "true"
+          secret: false
 deployment:
     skip: false
     environment:
