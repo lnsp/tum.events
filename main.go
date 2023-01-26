@@ -161,10 +161,17 @@ func (router *Router) setup() {
 
 func (router *Router) submit() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ac := router.authCtxFromRequest(w, r)
+		if !ac.Authenticated() {
+			// Redirect to login form
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
 		context := struct {
 			*authCtx
 			Categories []string
-		}{router.authCtxFromRequest(w, r), talkCategories}
+		}{ac, talkCategories}
+
 		if err := router.templates["submit.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
 		}
