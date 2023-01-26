@@ -32,6 +32,12 @@ func (l *Login) Active() bool {
 	return time.Now().Before(l.Expiration) && l.Attempt <= LoginMaxAttempts
 }
 
+type User struct {
+	ID     string   `json:"i"`
+	Editor []string `json:"e"`
+	Admin  bool     `json:"a"`
+}
+
 type Session struct {
 	Expiration time.Time `json:"e"`
 	User       string    `json:"u"`
@@ -551,4 +557,16 @@ func (store *Store) Talks() ([]*Talk, error) {
 	slice = make([]*Talk, len(store.cache))
 	copy(slice, store.cache)
 	return slice, nil
+}
+
+func (store *Store) User(id string) (*User, error) {
+	userdata, err := store.kv.Fetch(store.prefix + "_users_" + id)
+	if err != nil {
+		return nil, err
+	}
+	var user User
+	if err := json.Unmarshal(userdata, &user); err != nil {
+		return nil, err
+	}
+	return &user, nil
 }
