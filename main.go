@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/lnsp/tumtalks/auth"
 	"github.com/lnsp/tumtalks/kv"
 	"github.com/lnsp/tumtalks/mail"
 	"github.com/lnsp/tumtalks/structs"
@@ -63,7 +65,7 @@ func main() {
 	for _, t := range strings.Fields(os.Getenv("APITOKENS")) {
 		apiTokens[t] = struct{}{}
 	}
-	mail := mail.NewProvider(&mail.Config{
+	mail := mail.NewMailgunProvider(&mail.MailgunConfig{
 		Sender:       os.Getenv("MAIL_SENDER"),
 		SenderDomain: os.Getenv("MAIL_DOMAIN"),
 		APIKey:       os.Getenv("MAIL_APIKEY"),
@@ -73,13 +75,17 @@ func main() {
 		Token:   os.Getenv("VALAR_TOKEN"),
 		Project: os.Getenv("VALAR_PROJECT"),
 	}, os.Getenv("VALAR_PREFIX"))
+	auth := &auth.VerifiedProvider{
+		Mail:  mail,
+		Store: store,
+	}
 	publicURL, err := url.Parse(os.Getenv("ROUTER_PUBLICURL"))
 	if err != nil {
 		logrus.WithError(err).Fatal("public url is invalid")
 	}
 	httpsOnly := os.Getenv("ROUTER_HTTPSONLY") != ""
 	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
-	router := NewRouter(publicURL, store, mail, httpsOnly, publicDomainOnly, apiTokens)
+	router := NewRouter(publicURL, store, auth, httpsOnly, publicDomainOnly)
 	router.setup()
 	server := &http.Server{
 		Addr:         ":8080",
@@ -112,10 +118,9 @@ type Router struct {
 	publicURL        *url.URL
 	mux              *mux.Router
 	store            *structs.Store
-	mail             *mail.Provider
 	httpsOnly        bool
 	publicDomainOnly bool
-	apiTokens        map[string]struct{}
+	auth             auth.Provider
 
 	templates map[string]*template.Template
 }
@@ -166,12 +171,11 @@ func (router *Router) submit() http.Handler {
 	})
 }
 
-var userRegex = regexp.MustCompile(`^[a-z]{2}[0-9]{2}[a-z]{3}$`)
 var titleRegex = regexp.MustCompile(`^[\d\s\w?!:,\-]{10,128}$`)
 var linkSchemeRegex = regexp.MustCompile(`^http(s)?$`)
 
 const bodyCharLimit = 10000
-
+const genericErrorMessage = "Something has gone awry. Please try again."
 const localTimeFormat = "2006-01-02T15:04"
 
 func (router *Router) confirm() http.Handler {
@@ -393,7 +397,7 @@ func (router *Router) loginForm() http.Handler {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
-		showError := func(errorMsg string) {
+		showError := func(errorMsg string, status int) {
 			ctx := struct {
 				*authCtx
 				Error string
@@ -402,9 +406,10 @@ func (router *Router) loginForm() http.Handler {
 				Error:   errorMsg,
 			}
 			// Else show login form
+			w.WriteHeader(status)
 			if err := router.templates["login.html"].Execute(w, &ctx); err != nil {
 				logrus.WithError(err).Error("Failed to execute template")
-				http.Error(w, "rendering failed", http.StatusInternalServerError)
+				http.Error(w, "woops, failed to render site", http.StatusInternalServerError)
 			}
 		}
 		// Parse form data
@@ -414,51 +419,28 @@ func (router *Router) loginForm() http.Handler {
 		}
 		// Else validate input
 		user := r.Form.Get("uid")
-		if !userRegex.MatchString(user) {
-			showError("The username is not valid.")
+		login, err := router.auth.Login(user)
+		if errors.Is(err, structs.ErrInvalidInput) {
+			showError("Please check your username.", http.StatusBadRequest)
+			return
+		} else if loginErr := (structs.TooManyLoginsError{}); errors.As(err, &loginErr) {
+			showError(fmt.Sprintf("Too many login attempts. Please try again in %d seconds.", loginErr.Timeout), http.StatusTooManyRequests)
+			return
+		} else if err != nil {
+			showError(genericErrorMessage, http.StatusInternalServerError)
 			return
 		}
-
-		// Check that there is no active login attempt
-		active, timeout, err := router.store.HasTooManyLogins(user)
-		if err != nil {
-			http.Error(w, "could not check logins", http.StatusInternalServerError)
-			logrus.WithError(err).Error("Failed to check logins")
-			return
-		}
-		if active {
-			errorMsg := fmt.Sprintf("Too many concurrent login attempts. Please wait %d seconds before trying again.", timeout)
-			showError(errorMsg)
-			return
-		}
-
-		// Create login attempt
-		login, err := router.store.AttemptLogin(user)
-		if err != nil {
-			http.Error(w, "could not create login", http.StatusInternalServerError)
-			logrus.WithError(err).Error("Failed to create login")
-			return
-		}
-
-		// Send out email
-		if err := router.mail.SendLogin(login.User, login.Code); err != nil {
-			http.Error(w, "could not send login code", http.StatusInternalServerError)
-			logrus.WithError(err).Error("Failed to send login code")
-			return
-		}
-
 		// Render confirm site
 		ctx := struct {
 			*authCtx
-			Key   string
-			Error string
+			Key string
 		}{
 			authCtx: ac,
 			Key:     login.Key,
 		}
 		if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
+			http.Error(w, "woops, failed to render site", http.StatusInternalServerError)
 			return
 		}
 	})
@@ -687,15 +669,12 @@ func (router *Router) submitForm() http.Handler {
 			http.Error(w, "could not parse form", http.StatusBadRequest)
 			return
 		}
+		if !ac.Authenticated() {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
 		// Verify items one by one
 		user := ac.Login
-		if !ac.Authenticated() {
-			user := r.Form.Get("uid")
-			if !userRegex.MatchString(user) {
-				http.Error(w, "user not valid", http.StatusBadRequest)
-				return
-			}
-		}
 		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
 		title := r.Form.Get("title")
 		if len(strings.TrimSpace(title)) < 10 || !titleRegex.MatchString(title) {
@@ -751,50 +730,12 @@ func (router *Router) submitForm() http.Handler {
 			Link:     link,
 			Body:     body,
 		}
-		if ac.Authenticated() {
-			if err := router.store.InsertTalk(talk); err != nil {
-				logrus.WithError(err).Error("Failed to insert talk")
-				http.Error(w, "inserting talk failed", http.StatusInternalServerError)
-				return
-			}
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+		if err := router.store.InsertTalk(talk); err != nil {
+			logrus.WithError(err).Error("Failed to insert talk")
+			http.Error(w, "inserting talk failed", http.StatusInternalServerError)
 			return
 		}
-
-		// Check if there are any open verifications for this user
-		if ok, err := router.store.HasActiveVerification(user); err != nil {
-			http.Error(w, "failed to check verifications", http.StatusInternalServerError)
-			return
-		} else if ok {
-			http.Error(w, "user has active verifications", http.StatusForbidden)
-			return
-		}
-		secret, err := router.store.Add(talk)
-		if err != nil {
-			http.Error(w, "could not create verification", http.StatusInternalServerError)
-			return
-		}
-		// Render verification link
-		verificationLink := &url.URL{
-			Scheme: router.publicURL.Scheme,
-			Host:   router.publicURL.Host,
-			Path:   "/verify/" + secret,
-		}
-		// Send out verification link via email
-		if err := router.mail.SendVerification(user, verificationLink.String(), talk); err != nil {
-			logrus.WithError(err).Error("Failed to send email")
-			http.Error(w, "sending verification failed", http.StatusInternalServerError)
-			return
-		}
-		// Render confirm template
-		if err := router.templates["confirm.html"].Execute(w, &struct {
-			*authCtx
-			Talk bool
-		}{ac, false}); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "rendering failed", http.StatusInternalServerError)
-			return
-		}
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
 }
 
@@ -865,53 +806,6 @@ func (router *Router) categories() http.Handler {
 	})
 }
 
-func (router *Router) apiWrapper(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := r.Header.Get("X-Token")
-		if _, ok := router.apiTokens[token]; !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		handler.ServeHTTP(w, r)
-	})
-}
-
-func (router *Router) apiTalks() http.Handler {
-	type apiTalk struct {
-		User     string    `json:"user"`
-		Title    string    `json:"title"`
-		Category string    `json:"category"`
-		Date     time.Time `json:"date"`
-		Link     string    `json:"link,omitempty"`
-		Body     string    `json:"body,omitempty"`
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		talks, err := router.store.UpcomingTalks()
-		if err != nil {
-			logrus.WithError(err).Error("Failed to get upcoming talks")
-			http.Error(w, "failed to get data", http.StatusInternalServerError)
-			return
-		}
-		// Reconstruct as API talks
-		apiTalks := make([]*apiTalk, len(talks))
-		for i, t := range talks {
-			apiTalks[i] = &apiTalk{
-				User:     t.User,
-				Title:    t.Title,
-				Category: t.Category,
-				Date:     t.Date,
-				Link:     t.Link,
-				Body:     t.Body,
-			}
-		}
-		if err := json.NewEncoder(w).Encode(apiTalks); err != nil {
-			logrus.WithError(err).Error("Failed to encode response")
-			http.Error(w, "failed to encode response", http.StatusInternalServerError)
-			return
-		}
-	})
-}
-
 func (router *Router) category() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get category
@@ -961,15 +855,50 @@ func (router *Router) category() http.Handler {
 	})
 }
 
-func NewRouter(publicURL *url.URL, store *structs.Store, mail *mail.Provider, httpsOnly, publicDomainOnly bool, apiTokens map[string]struct{}) *Router {
+func (router *Router) apiTalks() http.Handler {
+	type apiTalk struct {
+		User     string    `json:"user"`
+		Title    string    `json:"title"`
+		Category string    `json:"category"`
+		Date     time.Time `json:"date"`
+		Link     string    `json:"link,omitempty"`
+		Body     string    `json:"body,omitempty"`
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		talks, err := router.store.UpcomingTalks()
+		if err != nil {
+			logrus.WithError(err).Error("Failed to get upcoming talks")
+			http.Error(w, "failed to get data", http.StatusInternalServerError)
+			return
+		}
+		// Reconstruct as API talks
+		apiTalks := make([]*apiTalk, len(talks))
+		for i, t := range talks {
+			apiTalks[i] = &apiTalk{
+				User:     t.User,
+				Title:    t.Title,
+				Category: t.Category,
+				Date:     t.Date,
+				Link:     t.Link,
+				Body:     t.Body,
+			}
+		}
+		if err := json.NewEncoder(w).Encode(apiTalks); err != nil {
+			logrus.WithError(err).Error("Failed to encode response")
+			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
+		}
+	})
+}
+
+func NewRouter(publicURL *url.URL, store *structs.Store, auth auth.Provider, httpsOnly, publicDomainOnly bool) *Router {
 	return &Router{
 		mux:              mux.NewRouter(),
 		publicURL:        publicURL,
 		store:            store,
-		mail:             mail,
 		httpsOnly:        httpsOnly,
 		publicDomainOnly: publicDomainOnly,
-		apiTokens:        apiTokens,
+		auth:             auth,
 	}
 }
 

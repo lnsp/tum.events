@@ -212,9 +212,20 @@ const loginExpiration = 10 * time.Minute
 const loginKeyLen = 32
 const loginCodeLen = 6
 
-var ErrLoginInvalidKey = errors.New("invalid key")
-var ErrLoginExpired = errors.New("login expired")
-var ErrLoginWrongCode = errors.New("wrong code")
+var (
+	ErrLoginInvalidKey = errors.New("invalid key")
+	ErrLoginExpired    = errors.New("login expired")
+	ErrLoginWrongCode  = errors.New("wrong code")
+	ErrInvalidInput    = errors.New("invalid input")
+)
+
+type TooManyLoginsError struct {
+	Timeout int
+}
+
+func (err TooManyLoginsError) Error() string {
+	return fmt.Sprintf("too many logins, try again in %d seconds", err.Timeout)
+}
 
 func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
 	// Check that key is 32-byte hex string
