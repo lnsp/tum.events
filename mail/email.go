@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mailgun/mailgun-go/v4"
+	"github.com/sirupsen/logrus"
 )
 
 //go:embed templates/tailwind.min.css
@@ -32,6 +33,13 @@ type MailgunConfig struct {
 
 type Provider interface {
 	SendLogin(user, code string) error
+}
+
+type DebugProvider struct{}
+
+func (dp *DebugProvider) SendLogin(user, code string) error {
+	logrus.WithFields(logrus.Fields{"user": user, "code": code}).Debug("Request dummy login email")
+	return nil
 }
 
 type MailgunProvider struct {

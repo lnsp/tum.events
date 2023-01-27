@@ -2,20 +2,29 @@ package auth
 
 import (
 	"regexp"
+	"time"
 
 	"github.com/lnsp/tumtalks/mail"
 	"github.com/lnsp/tumtalks/structs"
 	"github.com/sirupsen/logrus"
 )
 
-const debugLogin = "tu00mm"
-
 type Provider interface {
 	Login(user string) (*structs.Login, error)
-	LoginWithCode(user, code string) error
+	LoginWithCode(key, code string) (*structs.Session, error)
 }
 
 type DebugProvider struct{}
+
+func (provider *DebugProvider) Login(user string) (*structs.Login, error) {
+	return &structs.Login{
+		Key: "123456",
+	}, nil
+}
+
+func (provider *DebugProvider) LoginWithCode(key, code string) (*structs.Session, error) {
+	return &structs.Session{Expiration: time.Now().Add(time.Hour), User: "tu00mm", Key: key}, nil
+}
 
 type VerifiedProvider struct {
 	Store *structs.Store
@@ -55,6 +64,7 @@ func (provider *VerifiedProvider) Login(user string) (*structs.Login, error) {
 	return login, nil
 }
 
-func (provider *VerifiedProvider) LoginWithCode(user, code string) error {
-	return nil
+func (provider *VerifiedProvider) LoginWithCode(key, code string) (*structs.Session, error) {
+	session, _, err := provider.Store.ConfirmLogin(key, code)
+	return session, err
 }
