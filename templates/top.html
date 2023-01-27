@@ -6,14 +6,15 @@
   <div class="flex gap-2">
     <div class="w-7 sm:w-8 flex-shrink-0 text-right text text-gray-500">{{ $i | inc }}.</div>
     <div class="flex flex-col">
-      <div class="">
-        <a class="flex items-center hover:underline visited:text-gray-500"
+      <div class="gap-1 leading-tight">
+        <a class="hover:underline visited:text-gray-600 text-gray-900"
            href="{{ if $t.Link }}{{ $t.Link }}{{ else }}/talk?id={{ $t.ID }}{{ end }}">
           {{ $t.Title }}
         </a>
+        {{ $domain := $t.Link | domain }}{{ if $domain }}<a class="text-xs text-gray-500 hover:underline">({{ $domain }})</a>{{ end }}
       </div>
       <div class="text-sm text-gray-500 flex items-center gap-x-2 flex-wrap">
-        <span>{{ $t.Date | humandate }}</span>
+        <span class="text-xs">{{ $t.Date | humandate }}</span>
         |
         <a class="text-gray-500 text-xs hover:underline"
            href="/categories/{{ $t.Category }}">[{{ $t.Category }}]</a>

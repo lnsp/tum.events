@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gorilla/mux"
 	"github.com/lnsp/tumtalks/auth"
@@ -57,9 +58,11 @@ var talkCategories = []string{
 	"data-analytics",
 	"machine-learning",
 	"formal-methods",
+	"master-thesis",
+	"bachelor-thesis",
 }
 
-//go:generate sh -c "/bin/echo -n $VALAR_BUILD > version.txt"
+//go:generate sh -c "/bin/echo -n $VALAR_BUILD | head -c 8 > version.txt"
 //go:embed version.txt
 var buildID string
 
@@ -71,28 +74,38 @@ func main() {
 	logrus.SetFormatter(&logrus.TextFormatter{CallerPrettyfier: func(f *runtime.Frame) (string, string) {
 		return "", fmt.Sprintf("%s:%d", path.Base(f.File), f.Line)
 	}})
+	debugMode := os.Getenv("DEBUG") != ""
 
-	mail := mail.NewMailgunProvider(&mail.MailgunConfig{
-		Sender:       os.Getenv("MAIL_SENDER"),
-		SenderDomain: os.Getenv("MAIL_DOMAIN"),
-		APIKey:       os.Getenv("MAIL_APIKEY"),
-		UserDomain:   os.Getenv("MAIL_USERDOMAIN"),
-	})
+	mailProvider := mail.Provider(&mail.DebugProvider{})
+	if !debugMode {
+		mailProvider = mail.NewMailgunProvider(&mail.MailgunConfig{
+			Sender:       os.Getenv("MAIL_SENDER"),
+			SenderDomain: os.Getenv("MAIL_DOMAIN"),
+			APIKey:       os.Getenv("MAIL_APIKEY"),
+			UserDomain:   os.Getenv("MAIL_USERDOMAIN"),
+		})
+	}
+
 	store := structs.NewStore(&kv.Credentials{
 		Token:   os.Getenv("VALAR_TOKEN"),
 		Project: os.Getenv("VALAR_PROJECT"),
 	}, os.Getenv("VALAR_PREFIX"))
-	auth := &auth.VerifiedProvider{
-		Mail:  mail,
-		Store: store,
+
+	authProvider := auth.Provider(&auth.DebugProvider{})
+	if !debugMode {
+		authProvider = &auth.VerifiedProvider{
+			Mail:  mailProvider,
+			Store: store,
+		}
 	}
+
 	publicURL, err := url.Parse(os.Getenv("ROUTER_PUBLICURL"))
 	if err != nil {
 		logrus.WithError(err).Fatal("public url is invalid")
 	}
 	httpsOnly := os.Getenv("ROUTER_HTTPSONLY") != ""
 	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
-	router := NewRouter(publicURL, store, auth, httpsOnly, publicDomainOnly)
+	router := NewRouter(publicURL, store, authProvider, httpsOnly, publicDomainOnly)
 	router.setup()
 	server := &http.Server{
 		Addr:         ":8080",
@@ -115,6 +128,14 @@ var templateFuncs = template.FuncMap{
 	},
 	"inc": func(i int) int {
 		return i + 1
+	},
+	"domain": func(s string) string {
+		url, _ := url.Parse(s)
+		if url == nil {
+			return ""
+		}
+		host := strings.TrimPrefix(url.Host, "www.")
+		return host
 	},
 }
 
@@ -185,7 +206,22 @@ func (router *Router) submit() http.Handler {
 	})
 }
 
-var titleRegex = regexp.MustCompile(`^[\d\s\w?!:,\-]{10,128}$`)
+var titleRegex = regexp.MustCompile(`^[\d\s\w?!:,\-()]{10,128}$`)
+
+func validateTitle(proposed string) bool {
+	if !titleRegex.MatchString(proposed) {
+		return false
+	}
+	// A title should consist at least 50% of letters
+	count := 0
+	for _, r := range proposed {
+		if unicode.IsLetter(r) {
+			count++
+		}
+	}
+	return count > len(proposed)/2
+}
+
 var linkSchemeRegex = regexp.MustCompile(`^http(s)?$`)
 
 const bodyCharLimit = 10000
@@ -324,6 +360,25 @@ func (router *Router) editForm() http.Handler {
 			http.Error(w, "not the author of the talk", http.StatusForbidden)
 			return
 		}
+		// Set up basic error helper
+		showError := func(errorMsg string, status int) {
+			// Else show login form
+			w.WriteHeader(status)
+			ctx := struct {
+				baseCtx
+				Talk       *structs.Talk
+				Categories []string
+			}{
+				baseCtx:    ac,
+				Talk:       talk,
+				Categories: talkCategories,
+			}
+			ctx.Error = errorMsg
+			if err := router.templates["edit.html"].Execute(w, &ctx); err != nil {
+				logrus.WithError(err).Error("Failed to execute template")
+				return
+			}
+		}
 		// Parse form data
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad form data", http.StatusBadRequest)
@@ -339,9 +394,9 @@ func (router *Router) editForm() http.Handler {
 			return
 		}
 		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
-		title := r.Form.Get("title")
-		if len(strings.TrimSpace(title)) < 10 || !titleRegex.MatchString(title) {
-			http.Error(w, "title not valid", http.StatusBadRequest)
+		title := strings.TrimSpace(r.Form.Get("title"))
+		if !validateTitle(title) {
+			showError("Your title is invalid. It should match "+titleRegex.String()+`.`, http.StatusBadRequest)
 			return
 		}
 		talk.Title = title
@@ -349,7 +404,7 @@ func (router *Router) editForm() http.Handler {
 		// Make sure that we don't go over the character limit
 		body := r.Form.Get("body")
 		if len(body) > bodyCharLimit {
-			http.Error(w, "body has more than 10000 characters", http.StatusBadRequest)
+			showError("Your details body is too long. It should be no longer than 10000 characters.", http.StatusBadRequest)
 			return
 		}
 		talk.Body = body
@@ -358,10 +413,10 @@ func (router *Router) editForm() http.Handler {
 		link := r.Form.Get("url")
 		parsedLink, err := url.Parse(link)
 		if link != "" && err != nil {
-			http.Error(w, "link not valid", http.StatusBadRequest)
+			showError("Your link does not seem to be a valid URL.", http.StatusBadRequest)
 			return
 		} else if link != "" && !linkSchemeRegex.MatchString(parsedLink.Scheme) {
-			http.Error(w, "link must be http or https", http.StatusBadRequest)
+			showError("The talk links schema must be http:// or https://.", http.StatusBadRequest)
 			return
 		}
 		talk.Link = link
@@ -376,7 +431,7 @@ func (router *Router) editForm() http.Handler {
 			}
 		}
 		if !categoryExists {
-			http.Error(w, "category does not exist", http.StatusBadRequest)
+			showError("The selected category does not exist.", http.StatusBadRequest)
 			return
 		}
 		talk.Category = category
@@ -385,17 +440,17 @@ func (router *Router) editForm() http.Handler {
 		location, _ := time.LoadLocation("Europe/Berlin")
 		date, err := time.ParseInLocation(localTimeFormat, r.Form.Get("date"), location)
 		if err != nil {
-			http.Error(w, "could not parse datetime", http.StatusBadRequest)
+			showError("The selected date is in a non-parseable format.", http.StatusBadRequest)
 			return
 		}
 		if time.Since(date) >= 0 {
-			http.Error(w, "date has to be in the future", http.StatusBadRequest)
+			showError("The selected date has to be in the future.", http.StatusBadRequest)
 			return
 		}
 		talk.Date = date
 		// Update talk data
 		if err := router.store.UpdateTalk(talk); err != nil {
-			http.Error(w, "could not update talk", http.StatusInternalServerError)
+			showError(genericErrorMessage, http.StatusInternalServerError)
 			logrus.WithError(err).Error("Failed to update talk")
 			return
 		}
@@ -413,18 +468,12 @@ func (router *Router) loginForm() http.Handler {
 			return
 		}
 		showError := func(errorMsg string, status int) {
-			ctx := struct {
-				baseCtx
-				Error string
-			}{
-				baseCtx: ac,
-				Error:   errorMsg,
-			}
+			ac.Error = errorMsg
 			// Else show login form
 			w.WriteHeader(status)
-			if err := router.templates["login.html"].Execute(w, &ctx); err != nil {
+			if err := router.templates["login.html"].Execute(w, &ac); err != nil {
 				logrus.WithError(err).Error("Failed to execute template")
-				http.Error(w, "woops, failed to render site", http.StatusInternalServerError)
+				return
 			}
 		}
 		// Parse form data
@@ -455,7 +504,6 @@ func (router *Router) loginForm() http.Handler {
 		}
 		if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			http.Error(w, "woops, failed to render site", http.StatusInternalServerError)
 			return
 		}
 	})
@@ -484,13 +532,12 @@ func (router *Router) loginWithCode() http.Handler {
 			// Show form again
 			ctx := struct {
 				baseCtx
-				Key   string
-				Error string
+				Key string
 			}{
 				baseCtx: ac,
 				Key:     key,
-				Error:   errorMsg,
 			}
+			ctx.Error = errorMsg
 			if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
 				logrus.WithError(err).Error("Failed to execute template")
 				return
@@ -506,18 +553,18 @@ func (router *Router) loginWithCode() http.Handler {
 			return
 		}
 		// Retrieve login attempt with key
-		session, login, err := router.store.ConfirmLogin(key, code)
-		if err == structs.ErrLoginExpired {
+		session, err := router.auth.LoginWithCode(key, code)
+		if errors.Is(err, structs.ErrLoginInvalidKey) {
 			// Redirect to login form
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
-		} else if err == structs.ErrLoginWrongCode {
-			errorMsg := fmt.Sprintf("The code you entered is wrong (attempt %d of %d).", login.Attempt, structs.LoginMaxAttempts)
+		} else if wrongCodeErr := (structs.WrongCodeError{}); errors.As(err, &wrongCodeErr) {
+			errorMsg := fmt.Sprintf("The code you entered is wrong (attempt %d of %d).", wrongCodeErr.Attempt, wrongCodeErr.MaxAttempts)
 			showError(errorMsg)
 			return
 		} else if err != nil {
-			http.Error(w, "could not confirm login", http.StatusInternalServerError)
-			logrus.WithError(err).Warn("failed to confirm login")
+			logrus.WithError(err).Warn("Failed to confirm login")
+			showError(genericErrorMessage)
 			return
 		}
 		// Set session cookie
@@ -555,6 +602,7 @@ const sessionCookie = "session"
 
 type baseCtx struct {
 	Build      string
+	Error      string
 	Login      string
 	SessionKey string
 }
@@ -691,8 +739,8 @@ func (router *Router) submitForm() http.Handler {
 		// Verify items one by one
 		user := ac.Login
 		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
-		title := r.Form.Get("title")
-		if len(strings.TrimSpace(title)) < 10 || !titleRegex.MatchString(title) {
+		title := strings.TrimSpace(r.Form.Get("title"))
+		if !validateTitle(title) {
 			http.Error(w, "title not valid", http.StatusBadRequest)
 			return
 		}

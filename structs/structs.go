@@ -189,30 +189,6 @@ func (store *Store) HasActiveVerification(user string) (bool, error) {
 	return false, nil
 }
 
-func (store *Store) Add(talk *Talk) (string, error) {
-	// Generate secret
-	randBytes := make([]byte, secretLength)
-	rand.Reader.Read(randBytes)
-	secret := hex.EncodeToString(randBytes)
-	// Get timestamp
-	expiration := time.Now().Add(expirationInterval)
-	// Create verification
-	verif := &Verification{
-		Expiration: expiration,
-		Talk:       talk,
-	}
-	key := fmt.Sprintf("%s_verif_%s", store.prefix, secret)
-	data, err := json.Marshal(verif)
-	if err != nil {
-		return "", fmt.Errorf("encode verification: %w", err)
-	}
-	// Store in KV
-	if err := store.kv.Put(key, data); err != nil {
-		return "", fmt.Errorf("store verification: %w", err)
-	}
-	return secret, nil
-}
-
 const sessionExpiration = 24 * time.Hour * 30
 const loginExpiration = 10 * time.Minute
 const loginKeyLen = 32
@@ -221,7 +197,6 @@ const loginCodeLen = 6
 var (
 	ErrLoginInvalidKey = errors.New("invalid key")
 	ErrLoginExpired    = errors.New("login expired")
-	ErrLoginWrongCode  = errors.New("wrong code")
 	ErrInvalidInput    = errors.New("invalid input")
 )
 
@@ -231,6 +206,15 @@ type TooManyLoginsError struct {
 
 func (err TooManyLoginsError) Error() string {
 	return fmt.Sprintf("too many logins, try again in %d seconds", err.Timeout)
+}
+
+type WrongCodeError struct {
+	Attempt     int
+	MaxAttempts int
+}
+
+func (err WrongCodeError) Error() string {
+	return fmt.Sprintf("wrong code, attempt %d of %d", err.Attempt, err.MaxAttempts)
 }
 
 func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
@@ -266,7 +250,7 @@ func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
 	}
 	// Make sure that code matches
 	if login.Code != code {
-		return nil, &login, ErrLoginWrongCode
+		return nil, &login, WrongCodeError{Attempt: login.Attempt, MaxAttempts: LoginMaxAttempts}
 	}
 	// Delete login, turn into session
 	if err := store.kv.Delete(loginKey); err != nil {

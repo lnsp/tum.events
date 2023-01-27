@@ -1,6 +1,9 @@
 {{ define "title" }}Edit &mdash; TUM Events{{ end }}
 {{ define "content" }}
 <form action="" method="POST" class="p-2">
+  {{ with .Error }}
+  <div class="mb-3 text-gray-600 flex gap-2 items-center"><span class="flex items-center justify-center w-6 h-6 bg-gray-600 text-white font-bold">!</span>{{ . }}</div>
+  {{ end }}
   <div class="grid grid-cols-12 gap-2">
     <label for="title" class="col-span-2">Title</label>
     <div class="col-span-10">
