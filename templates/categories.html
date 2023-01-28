@@ -1,19 +1,8 @@
 {{ define "title" }}{{ if .Category }}{{ .Category }}{{ else }}Categories{{ end }} &mdash; TUM Events{{ end }}
 {{ define "content" }}
-{{ if .Category }}
-<div class="p-2 flex flex-col gap-2">
-  {{ range .Talks }}
-  <a class="flex gap-2 hover:underline visited:text-gray-500" href="{{ .Link }}">
-    <div class="text-left flex-shrink-0 w-24">{{ .Date | humandate }}</div>
-    <div class="">{{ .Title }}</div>
-  </a>
-  {{ end }}
-</div>
-{{ else }}
 <div class="p-2 flex flex-wrap gap-2">
 {{ range .Categories }}
-<a href="/categories/{{ . }}" class="text-gray-700 hover:underline">[{{ . }}]</a>
+<a href="/filter?category={{ . }}" class="text-gray-700 hover:underline">[{{ . }}]</a>
 {{ end }}
 </div>
-{{ end }}
 {{ end }}

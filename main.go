@@ -150,8 +150,8 @@ func (router *Router) setup() {
 	router.mux.Handle("/", router.top()).Methods("GET")
 	router.mux.Handle("/top", router.top()).Methods("GET")
 	router.mux.Handle("/nextup", router.nextup()).Methods("GET")
+	router.mux.Handle("/filter", router.filter()).Methods("GET")
 	router.mux.Handle("/categories", router.categories()).Methods("GET")
-	router.mux.Handle("/categories/{category}", router.category()).Methods("GET")
 	router.mux.Handle("/talk", router.downloadTalk()).Methods("GET").Queries("id", "{id:[0-9]+}", "format", "ics")
 	router.mux.Handle("/talk", router.talk()).Methods("GET").Queries("id", "{id:[0-9]+}")
 	router.mux.Handle("/edit", router.edit()).Methods("GET").Queries("id", "{id:[0-9]+}")
@@ -174,7 +174,7 @@ func (router *Router) setup() {
 
 	// parse templates
 	router.templates = make(map[string]*template.Template)
-	for _, t := range []string{"templates/categories.html", "templates/submit.html", "templates/top.html", "templates/confirm.html", "templates/legal.html", "templates/talk.html", "templates/login.html", "templates/login-code.html", "templates/edit.html"} {
+	for _, t := range []string{"templates/categories.html", "templates/submit.html", "templates/top.html", "templates/confirm.html", "templates/legal.html", "templates/talk.html", "templates/login.html", "templates/login-code.html", "templates/edit.html", "templates/filter.html"} {
 		router.templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(templateFuncs).ParseFS(webTemplates, "templates/base.html", t))
 	}
 }
@@ -861,20 +861,34 @@ func (router *Router) categories() http.Handler {
 	})
 }
 
-func (router *Router) category() http.Handler {
+func (router *Router) filter() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get category
-		category := mux.Vars(r)["category"]
+		// Get category or site filter
+		query := r.URL.Query()
+		site := query.Get("site")
+		category := query.Get("category")
+		filters := make([]func(t *structs.Talk) bool, 0, 2)
 		// Check that category is in 'valid' categories
-		found := false
-		for _, c := range talkCategories {
-			if c == category {
-				found = true
+		if category != "" {
+			found := false
+			for _, c := range talkCategories {
+				if c == category {
+					found = true
+				}
 			}
+			if !found {
+				http.Error(w, "category not found", http.StatusNotFound)
+				return
+			}
+			filters = append(filters, func(t *structs.Talk) bool {
+				return t.Category == category
+			})
 		}
-		if !found {
-			http.Error(w, "category not found", http.StatusNotFound)
-			return
+		// Add site filter
+		if site != "" {
+			filters = append(filters, func(t *structs.Talk) bool {
+				return t.LinkDomain == site
+			})
 		}
 		// Put into top context
 		talks, err := router.store.UpcomingTalks()
@@ -882,10 +896,17 @@ func (router *Router) category() http.Handler {
 			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
 			return
 		}
-		// Filter talks by category
+		// Filter talks
 		j := 0
 		for i := range talks {
-			if talks[i].Category == category {
+			match := true
+			for j := range filters {
+				if !filters[j](talks[i]) {
+					match = false
+					break
+				}
+			}
+			if match {
 				talks[j] = talks[i]
 				j++
 			}
@@ -896,14 +917,16 @@ func (router *Router) category() http.Handler {
 
 		context := struct {
 			baseCtx
-			Category string
-			Talks    []*structs.Talk
+			Category   string
+			LinkDomain string
+			Talks      []*structs.Talk
 		}{
-			baseCtx:  router.baseCtx(w, r),
-			Category: category,
-			Talks:    talks,
+			baseCtx:    router.baseCtx(w, r),
+			Category:   category,
+			LinkDomain: site,
+			Talks:      talks,
 		}
-		if err := router.templates["categories.html"].Execute(w, &context); err != nil {
+		if err := router.templates["filter.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
 			return
 		}
