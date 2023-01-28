@@ -28,9 +28,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	existingTalks := map[string]string{}
+	existingTalks := map[string]struct{}{}
 	for _, t := range talks {
-		existingTalks[t.Title] = t.Link
+		existingTalks[t.Link] = struct{}{}
 	}
 
 	// fetch talk data
@@ -46,9 +46,9 @@ func run() error {
 		for i := range titles {
 			kind := ""
 			if strings.HasPrefix(titles[i], "Final talk for Bachelor's Thesis") {
-				kind = "Bachelor's Thesis"
+				kind = "bachelor-thesis"
 			} else if strings.HasPrefix(titles[i], "Final talk for Master's Thesis") {
-				kind = "Master's Thesis"
+				kind = "master-thesis"
 			} else {
 				continue
 			}
@@ -59,16 +59,15 @@ func run() error {
 			if time.Now().After(published) {
 				continue
 			}
-			title := fmt.Sprintf("%s (%s)", descriptions[i], kind)
 			talk := &structs.Talk{
-				Category: "computer-networks",
+				Category: kind,
 				User:     "ga87fey",
-				Title:    title,
+				Title:    descriptions[i],
 				Date:     published,
 				Link:     item.Link,
 			}
 			// to be considered the same, both title and url must be the same
-			if existingTalks[talk.Title] == talk.Link {
+			if _, ok := existingTalks[talk.Link]; ok {
 				continue
 			}
 			log.Printf("Added talk with ID %d", talk.ID)
