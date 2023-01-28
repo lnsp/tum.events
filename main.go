@@ -129,14 +129,6 @@ var templateFuncs = template.FuncMap{
 	"inc": func(i int) int {
 		return i + 1
 	},
-	"domain": func(s string) string {
-		url, _ := url.Parse(s)
-		if url == nil {
-			return ""
-		}
-		host := strings.TrimPrefix(url.Host, "www.")
-		return host
-	},
 }
 
 //go:embed templates/tailwind.min.css

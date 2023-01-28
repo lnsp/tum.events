@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,14 +60,27 @@ func (v *Verification) Active() bool {
 }
 
 type Talk struct {
-	ID       int64     `json:"i,omitempty"`
-	Rank     int64     `json:"-"`
-	User     string    `json:"u"`
-	Title    string    `json:"t"`
-	Category string    `json:"c"`
-	Date     time.Time `json:"d"`
-	Link     string    `json:"l,omitempty"`
-	Body     string    `json:"b,omitempty"`
+	ID         int64     `json:"i,omitempty"`
+	Rank       int64     `json:"-"`
+	User       string    `json:"u"`
+	Title      string    `json:"t"`
+	Category   string    `json:"c"`
+	Date       time.Time `json:"d"`
+	Link       string    `json:"l,omitempty"`
+	LinkDomain string    `json:"-"`
+	Body       string    `json:"b,omitempty"`
+}
+
+func (t *Talk) deriveLinkDomain() error {
+	if t.Link == "" {
+		return nil
+	}
+	u, err := url.Parse(t.Link)
+	if err != nil {
+		return err
+	}
+	t.LinkDomain = strings.TrimPrefix(u.Host, "www.")
+	return nil
 }
 
 var markdownRenderer = goldmark.New(
@@ -484,8 +499,9 @@ func (store *Store) updateCache(keys []string, hash []byte) error {
 			if err := json.Unmarshal(talkdata, talks[i]); err != nil {
 				return fmt.Errorf("parse talk: %w", err)
 			}
+			talks[i].deriveLinkDomain()
 		}
-		// TODO(lnsp): Compute talk scores and ranks
+		// TODO(lnsp): Compute talk scores, ranks
 		talks[i].Rank = int64(i + 1)
 		talkmap[talks[i].ID] = talks[i]
 	}

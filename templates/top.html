@@ -11,7 +11,7 @@
            href="{{ if $t.Link }}{{ $t.Link }}{{ else }}/talk?id={{ $t.ID }}{{ end }}">
           {{ $t.Title }}
         </a>
-        {{ $domain := $t.Link | domain }}{{ if $domain }}<a class="text-xs text-gray-500 hover:underline">({{ $domain }})</a>{{ end }}
+        {{ if $t.LinkDomain }}<a class="text-xs text-gray-500 hover:underline">({{ $t.LinkDomain }})</a>{{ end }}
       </div>
       <div class="text-sm text-gray-500 flex items-center gap-x-2 flex-wrap">
         <span class="text-xs">{{ $t.Date | humandate }}</span>
