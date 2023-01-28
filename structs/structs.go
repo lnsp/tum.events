@@ -14,10 +14,12 @@ import (
 
 	"github.com/lnsp/tumtalks/kv"
 	"github.com/microcosm-cc/bluemonday"
+	"github.com/sirupsen/logrus"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
+	"golang.org/x/sync/errgroup"
 )
 
 const LoginMaxAttempts = 3
@@ -466,6 +468,10 @@ func (store *Store) Talk(id int64) (*Talk, error) {
 	}
 
 	// Else update cache
+	logrus.WithFields(logrus.Fields{
+		"got_hash":      hex.EncodeToString(hash),
+		"expected_hash": hex.EncodeToString(store.hash),
+	}).Debug("Mismatching hashes, updating cache")
 	if err := store.updateCache(talkkeys, hash); err != nil {
 		return nil, fmt.Errorf("update cache: %w", err)
 	}
@@ -473,8 +479,13 @@ func (store *Store) Talk(id int64) (*Talk, error) {
 	return store.cachemap[id], nil
 }
 
+const numUpdateCacheWorkers = 8
+
 // mu must be held before calling
 func (store *Store) updateCache(keys []string, hash []byte) error {
+	// Start measuring update cache op
+	opStart := time.Now()
+
 	// Generate list of kept talks
 	cached := make(map[string]int)
 	for i := range store.cache {
@@ -482,34 +493,65 @@ func (store *Store) updateCache(keys []string, hash []byte) error {
 		cached[key] = i
 	}
 
-	// Go through each key and fetch talk
+	// Go through each key and fetch talk concurrently
 	talks := make([]*Talk, len(keys))
 	talkmap := make(map[int64]*Talk)
+	// Start up worker pool with N goroutines
+	type workQueueItem struct {
+		Index int
+		Key   string
+	}
+	group := &errgroup.Group{}
+	workQueue := make(chan workQueueItem, numUpdateCacheWorkers)
+	for i := 0; i < numUpdateCacheWorkers; i++ {
+		group.Go(func() error {
+			for wqi := range workQueue {
+				talkdata, err := store.kv.Fetch(wqi.Key)
+				if err != nil {
+					return fmt.Errorf("fetch talk: %w", err)
+				}
+				if err := json.Unmarshal(talkdata, talks[wqi.Index]); err != nil {
+					return fmt.Errorf("parse talk: %w", err)
+				}
+				talks[wqi.Index].deriveLinkDomain()
+			}
+			return nil
+		})
+	}
+	// Send out required computations
+	diffcount := 0
 	for i, key := range keys {
 		if j, ok := cached[key]; ok {
-			// Copy over from cache
 			talks[i] = store.cache[j]
 		} else {
-			// Fetch new talk
-			talkdata, err := store.kv.Fetch(key)
-			if err != nil {
-				return fmt.Errorf("fetch talk list: %w", err)
-			}
 			talks[i] = &Talk{}
-			if err := json.Unmarshal(talkdata, talks[i]); err != nil {
-				return fmt.Errorf("parse talk: %w", err)
-			}
-			talks[i].deriveLinkDomain()
+			workQueue <- workQueueItem{Index: i, Key: key}
+			diffcount++
 		}
-		// TODO(lnsp): Compute talk scores, ranks
+	}
+	close(workQueue)
+	// Wait for all workers to finish
+	if err := group.Wait(); err != nil {
+		logrus.WithError(err).Warn("Got err while updating cache")
+		return err
+	}
+	// TODO(lnsp): Compute talk scores, ranks
+	for i := range keys {
 		talks[i].Rank = int64(i + 1)
 		talkmap[talks[i].ID] = talks[i]
 	}
-
 	// Update cache and hash
 	store.hash = hash
 	store.cache = talks
 	store.cachemap = talkmap
+
+	// Report status in log
+	opEnd := time.Now()
+	logrus.WithFields(logrus.Fields{
+		"hash":     hex.EncodeToString(hash),
+		"diff":     diffcount,
+		"duration": opEnd.Sub(opStart),
+	}).Debug("Successfully updated cache")
 	return nil
 }
 
