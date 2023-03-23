@@ -70,11 +70,11 @@ func run() error {
 			if _, ok := existingTalks[talk.Link]; ok {
 				continue
 			}
-			log.Printf("Added talk with ID %d", talk.ID)
 			// now we can feed it
 			if err := store.InsertTalk(talk); err != nil {
 				return err
 			}
+			fmt.Println("Inserted talk", talk.Title)
 			count++
 		}
 	}
