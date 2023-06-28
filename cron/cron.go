@@ -20,10 +20,12 @@ func main() {
 
 func run() error {
 	// fetch all existing talks
-	store := structs.NewStore(&kv.Credentials{
-		Token:   os.Getenv("VALAR_TOKEN"),
-		Project: os.Getenv("VALAR_PROJECT"),
-	}, os.Getenv("VALAR_PREFIX"))
+	kvBackend := kv.NewRemoteStore(
+		kv.Credentials{
+			Token:   os.Getenv("VALAR_TOKEN"),
+			Project: os.Getenv("VALAR_PROJECT"),
+		})
+	store := structs.NewStore(kvBackend, os.Getenv("VALAR_PREFIX"))
 	talks, err := store.Talks()
 	if err != nil {
 		return err

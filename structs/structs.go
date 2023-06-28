@@ -115,7 +115,7 @@ func (t *Talk) RenderAsHTML() string {
 }
 
 type Store struct {
-	kv     *kv.Store
+	kv     kv.Store
 	prefix string
 
 	mu       sync.Mutex
@@ -124,12 +124,10 @@ type Store struct {
 	hash     []byte
 }
 
-func NewStore(creds *kv.Credentials, prefix string) *Store {
+func NewStore(backend kv.Store, prefix string) *Store {
 	return &Store{
 		prefix: prefix,
-		kv: &kv.Store{
-			Credentials: creds,
-		},
+		kv: backend,
 	}
 }
 

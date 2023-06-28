@@ -3,11 +3,15 @@ package kv
 import (
 	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
 	"net/http"
+	"sort"
+	"strings"
+	"sync"
 )
 
 type Credentials struct {
@@ -15,18 +19,102 @@ type Credentials struct {
 	Project string
 }
 
-type Store struct {
-	*Credentials
+// Store defines an implementation-agnostic key-value storage interface.
+type Store interface {
+	AtomicInc(key string) (int64, error)
+	Delete(key string) error
+	Put(key string, value []byte) error
+	Fetch(key string) ([]byte, error)
+	List(prefix string) ([]string, []byte, error)
 }
 
-func (store *Store) AtomicInc(key string) (int64, error) {
+var _ Store = (*inMemoryStore)(nil)
+
+type inMemoryStore struct {
+	// mu protects the fields below.
+	mu  sync.RWMutex
+	kvs map[string][]byte
+}
+
+// NewInMemoryStore returns a new KV backend using an ephemeral in-memory representation.
+func NewInMemoryStore() Store {
+	return &inMemoryStore{kvs: make(map[string][]byte)}
+}
+
+const inMemoryIntBytes = 8
+
+func (store *inMemoryStore) AtomicInc(key string) (int64, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	value := store.kvs[key]
+	if len(value) != inMemoryIntBytes {
+		value = make([]byte, inMemoryIntBytes)
+	}
+	next := 1 + int64(binary.LittleEndian.Uint64(value))
+	binary.LittleEndian.PutUint64(value, uint64(next))
+	store.kvs[key] = value
+
+	return next, nil
+}
+
+func (store *inMemoryStore) Delete(key string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	delete(store.kvs, key)
+	return nil
+}
+
+func (store *inMemoryStore) Put(key string, value []byte) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	store.kvs[key] = value[:]
+	return nil
+}
+
+func (store *inMemoryStore) Fetch(key string) ([]byte, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	return store.kvs[key], nil
+}
+
+func (store *inMemoryStore) List(prefix string) ([]string, []byte, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	keys := []string{}
+	for key := range store.kvs {
+		if strings.HasPrefix(string(key), prefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+
+	hash := sha1.Sum([]byte(strings.Join(keys, "\x00")))
+	return keys, hash[:], nil
+}
+
+// NewRemoteStore returns a new storage backend using a managed Valar KV database instance.
+func NewRemoteStore(cred Credentials) Store {
+	return &remoteStore{&cred, http.DefaultClient}
+}
+
+type remoteStore struct {
+	*Credentials
+	httpClient *http.Client
+}
+
+func (store *remoteStore) AtomicInc(key string) (int64, error) {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?op=inc&mode=atomic", store.Project, key)
 	request, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return -1, err
 	}
 	request.Header.Set("Authorization", "Bearer "+store.Token)
-	response, err := http.DefaultClient.Do(request)
+	response, err := store.httpClient.Do(request)
 	if err != nil {
 		return -1, err
 	}
@@ -40,14 +128,14 @@ func (store *Store) AtomicInc(key string) (int64, error) {
 	return num.Int64(), nil
 }
 
-func (store *Store) Delete(key string) error {
+func (store *remoteStore) Delete(key string) error {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	request, err := http.NewRequest(http.MethodDelete, url, nil)
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+store.Token)
-	response, err := http.DefaultClient.Do(request)
+	response, err := store.httpClient.Do(request)
 	if err != nil {
 		return err
 	}
@@ -55,7 +143,7 @@ func (store *Store) Delete(key string) error {
 	return nil
 }
 
-func (store *Store) Put(key string, value []byte) error {
+func (store *remoteStore) Put(key string, value []byte) error {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	body := bytes.NewReader(value)
 	request, err := http.NewRequest(http.MethodPost, url, body)
@@ -63,7 +151,7 @@ func (store *Store) Put(key string, value []byte) error {
 		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+store.Token)
-	response, err := http.DefaultClient.Do(request)
+	response, err := store.httpClient.Do(request)
 	if err != nil {
 		return err
 	}
@@ -71,14 +159,14 @@ func (store *Store) Put(key string, value []byte) error {
 	return nil
 }
 
-func (store *Store) Fetch(key string) ([]byte, error) {
+func (store *remoteStore) Fetch(key string) ([]byte, error) {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s", store.Project, key)
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+store.Token)
-	response, err := http.DefaultClient.Do(request)
+	response, err := store.httpClient.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -90,14 +178,14 @@ func (store *Store) Fetch(key string) ([]byte, error) {
 	return data, nil
 }
 
-func (store *Store) List(prefix string) ([]string, []byte, error) {
+func (store *remoteStore) List(prefix string) ([]string, []byte, error) {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?mode=list", store.Project, prefix)
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+store.Token)
-	response, err := http.DefaultClient.Do(request)
+	response, err := store.httpClient.Do(request)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -107,10 +195,10 @@ func (store *Store) List(prefix string) ([]string, []byte, error) {
 		return nil, nil, err
 	}
 	// hash data
-	hash := sha1.Sum(data)
 	keys := []string{}
 	if err := json.Unmarshal(data, &keys); err != nil {
 		return nil, nil, err
 	}
+	hash := sha1.Sum([]byte(strings.Join(keys, "\x00")))
 	return keys, hash[:], nil
 }

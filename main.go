@@ -66,8 +66,6 @@ var talkCategories = []string{
 //go:embed version.txt
 var buildID string
 
-const authCookieKey = "auth"
-
 func main() {
 	// Setup nice logging
 	logrus.SetReportCaller(true)
@@ -86,10 +84,15 @@ func main() {
 		})
 	}
 
-	store := structs.NewStore(&kv.Credentials{
-		Token:   os.Getenv("VALAR_TOKEN"),
-		Project: os.Getenv("VALAR_PROJECT"),
-	}, os.Getenv("VALAR_PREFIX"))
+	kvBackend := kv.NewInMemoryStore()
+	if !debugMode {
+		kvBackend = kv.NewRemoteStore(kv.Credentials{
+			Token:   os.Getenv("VALAR_TOKEN"),
+			Project: os.Getenv("VALAR_PROJECT"),
+		})
+	}
+
+	store := structs.NewStore(kvBackend, os.Getenv("VALAR_PREFIX"))
 
 	authProvider := auth.Provider(&auth.DebugProvider{})
 	if !debugMode {
@@ -503,8 +506,6 @@ func (router *Router) loginForm() http.Handler {
 
 var loginKeyRegex = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var loginCodeRegex = regexp.MustCompile(`^[0-9]{6}$`)
-
-const sessionCookieExpiration = time.Hour * 24 * 30
 
 func (router *Router) loginWithCode() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
