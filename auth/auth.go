@@ -8,19 +8,19 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type Provider interface {
+type Auth interface {
 	Login(user string) (*structs.Login, error)
 	LoginWithCode(key, code string) (*structs.Session, error)
 }
 
-type VerifiedProvider struct {
+type MailBasedAuth struct {
 	Store *structs.Store
 	Mail  mail.Provider
 }
 
 var userRegex = regexp.MustCompile(`^[a-z]{2}[0-9]{2}[a-z]{3}$`)
 
-func (provider *VerifiedProvider) Login(user string) (*structs.Login, error) {
+func (provider *MailBasedAuth) Login(user string) (*structs.Login, error) {
 	if !userRegex.MatchString(user) {
 		return nil, structs.ErrInvalidInput
 	}
@@ -51,7 +51,7 @@ func (provider *VerifiedProvider) Login(user string) (*structs.Login, error) {
 	return login, nil
 }
 
-func (provider *VerifiedProvider) LoginWithCode(key, code string) (*structs.Session, error) {
+func (provider *MailBasedAuth) LoginWithCode(key, code string) (*structs.Session, error) {
 	session, _, err := provider.Store.ConfirmLogin(key, code)
 	return session, err
 }

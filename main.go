@@ -93,7 +93,7 @@ func main() {
 	}
 
 	store := structs.NewStore(kvBackend, os.Getenv("VALAR_PREFIX"))
-	authProvider := &auth.VerifiedProvider{
+	authProvider := &auth.MailBasedAuth{
 		Mail:  mailProvider,
 		Store: store,
 	}
@@ -139,7 +139,7 @@ type Router struct {
 	store            *structs.Store
 	httpsOnly        bool
 	publicDomainOnly bool
-	auth             auth.Provider
+	auth             auth.Auth
 
 	templates map[string]*template.Template
 }
@@ -966,7 +966,7 @@ func (router *Router) apiTalks() http.Handler {
 	})
 }
 
-func NewRouter(publicURL *url.URL, store *structs.Store, auth auth.Provider, httpsOnly, publicDomainOnly bool) *Router {
+func NewRouter(publicURL *url.URL, store *structs.Store, auth auth.Auth, httpsOnly, publicDomainOnly bool) *Router {
 	return &Router{
 		mux:              mux.NewRouter(),
 		publicURL:        publicURL,
