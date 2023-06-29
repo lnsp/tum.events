@@ -92,10 +92,10 @@ func main() {
 		})
 	}
 
-	store := structs.NewStore(kvBackend, os.Getenv("VALAR_PREFIX"))
+	storage := structs.NewStorage(kvBackend, os.Getenv("VALAR_PREFIX"))
 	authProvider := &auth.MailBasedAuth{
-		Mail:  mailProvider,
-		Store: store,
+		Mail:    mailProvider,
+		Storage: storage,
 	}
 
 	publicURL, err := url.Parse(os.Getenv("ROUTER_PUBLICURL"))
@@ -104,7 +104,7 @@ func main() {
 	}
 	httpsOnly := os.Getenv("ROUTER_HTTPSONLY") != ""
 	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
-	router := NewRouter(publicURL, store, authProvider, httpsOnly, publicDomainOnly)
+	router := NewRouter(publicURL, storage, authProvider, httpsOnly, publicDomainOnly)
 	router.setup()
 	server := &http.Server{
 		Addr:         ":8080",
@@ -136,7 +136,7 @@ var tailwindStyles []byte
 type Router struct {
 	publicURL        *url.URL
 	mux              *mux.Router
-	store            *structs.Store
+	storage          *structs.Storage
 	httpsOnly        bool
 	publicDomainOnly bool
 	auth             auth.Auth
@@ -235,7 +235,7 @@ func (router *Router) confirm() http.Handler {
 func (router *Router) verify() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secret := mux.Vars(r)["secret"]
-		if err := router.store.Verify(secret); err != nil {
+		if err := router.storage.Verify(secret); err != nil {
 			http.Error(w, "could not verify talk", http.StatusConflict)
 			return
 		}
@@ -302,7 +302,7 @@ func (router *Router) edit() http.Handler {
 			return
 		}
 		// Get post with given ID
-		talk, err := router.store.Talk(id)
+		talk, err := router.storage.Talk(id)
 		if talk == nil || err != nil {
 			http.Error(w, "could not find talk", http.StatusNotFound)
 			return
@@ -342,7 +342,7 @@ func (router *Router) editForm() http.Handler {
 			return
 		}
 		// Get post with given ID
-		talk, err := router.store.Talk(id)
+		talk, err := router.storage.Talk(id)
 		if talk == nil || err != nil {
 			http.Error(w, "could not find talk", http.StatusNotFound)
 			return
@@ -377,7 +377,7 @@ func (router *Router) editForm() http.Handler {
 		}
 		// If we want to delete the post, thats easy!
 		if delete := r.Form.Get("delete"); delete != "" {
-			if err := router.store.DeleteTalk(id); err != nil {
+			if err := router.storage.DeleteTalk(id); err != nil {
 				http.Error(w, "could not delete talk", http.StatusInternalServerError)
 				logrus.WithError(err).Error("Failed to delete talk")
 				return
@@ -440,7 +440,7 @@ func (router *Router) editForm() http.Handler {
 		}
 		talk.Date = date
 		// Update talk data
-		if err := router.store.UpdateTalk(talk); err != nil {
+		if err := router.storage.UpdateTalk(talk); err != nil {
 			showError(genericErrorMessage, http.StatusInternalServerError)
 			logrus.WithError(err).Error("Failed to update talk")
 			return
@@ -578,7 +578,7 @@ func (router *Router) logout() http.Handler {
 		// Drop cookie in user session
 		dropSessionCookie(w)
 		// Delete session from store
-		if err := router.store.DeleteSession(ac.SessionKey); err != nil {
+		if err := router.storage.DeleteSession(ac.SessionKey); err != nil {
 			http.Error(w, "could not drop session", http.StatusInternalServerError)
 			return
 		}
@@ -621,7 +621,7 @@ func (router *Router) baseCtx(w http.ResponseWriter, r *http.Request) baseCtx {
 		dropSessionCookie(w)
 		return ctx
 	}
-	user, err := router.store.VerifySession(key)
+	user, err := router.storage.VerifySession(key)
 	if err != nil {
 		// Delete session cookie
 		dropSessionCookie(w)
@@ -639,7 +639,7 @@ func (router *Router) downloadTalk() http.Handler {
 			http.Error(w, "invalid talk id", http.StatusBadRequest)
 			return
 		}
-		talk, err := router.store.Talk(id)
+		talk, err := router.storage.Talk(id)
 		if talk == nil || err != nil {
 			http.Error(w, "could not fetch talk", http.StatusInternalServerError)
 			logrus.WithError(err).Error("Failed to fetch talk")
@@ -673,7 +673,7 @@ func (router *Router) talk() http.Handler {
 			http.Error(w, "invalid talk id", http.StatusBadRequest)
 			return
 		}
-		talk, err := router.store.Talk(id)
+		talk, err := router.storage.Talk(id)
 		if talk == nil || err != nil {
 			http.Error(w, "could not fetch talk", http.StatusInternalServerError)
 			logrus.WithError(err).Error("Failed to fetch talk")
@@ -782,7 +782,7 @@ func (router *Router) submitForm() http.Handler {
 			Link:     link,
 			Body:     body,
 		}
-		if err := router.store.InsertTalk(talk); err != nil {
+		if err := router.storage.InsertTalk(talk); err != nil {
 			logrus.WithError(err).Error("Failed to insert talk")
 			http.Error(w, "inserting talk failed", http.StatusInternalServerError)
 			return
@@ -793,7 +793,7 @@ func (router *Router) submitForm() http.Handler {
 
 func (router *Router) top() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		talks, err := router.store.UpcomingTalks()
+		talks, err := router.storage.UpcomingTalks()
 		if err != nil {
 			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
 			return
@@ -817,7 +817,7 @@ func (router *Router) top() http.Handler {
 func (router *Router) nextup() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get talks sorted by date
-		talks, err := router.store.UpcomingTalks()
+		talks, err := router.storage.UpcomingTalks()
 		if err != nil {
 			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
 			return
@@ -888,7 +888,7 @@ func (router *Router) filter() http.Handler {
 			})
 		}
 		// Put into top context
-		talks, err := router.store.UpcomingTalks()
+		talks, err := router.storage.UpcomingTalks()
 		if err != nil {
 			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
 			return
@@ -940,7 +940,7 @@ func (router *Router) apiTalks() http.Handler {
 		Body     string    `json:"body,omitempty"`
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		talks, err := router.store.UpcomingTalks()
+		talks, err := router.storage.UpcomingTalks()
 		if err != nil {
 			logrus.WithError(err).Error("Failed to get upcoming talks")
 			http.Error(w, "failed to get data", http.StatusInternalServerError)
@@ -966,11 +966,11 @@ func (router *Router) apiTalks() http.Handler {
 	})
 }
 
-func NewRouter(publicURL *url.URL, store *structs.Store, auth auth.Auth, httpsOnly, publicDomainOnly bool) *Router {
+func NewRouter(publicURL *url.URL, storage *structs.Storage, auth auth.Auth, httpsOnly, publicDomainOnly bool) *Router {
 	return &Router{
 		mux:              mux.NewRouter(),
 		publicURL:        publicURL,
-		store:            store,
+		storage:          storage,
 		httpsOnly:        httpsOnly,
 		publicDomainOnly: publicDomainOnly,
 		auth:             auth,

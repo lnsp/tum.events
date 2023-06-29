@@ -114,7 +114,8 @@ func (t *Talk) RenderAsHTML() string {
 	return string(sanitized)
 }
 
-type Store struct {
+// Storage provides capabilities to access and manage both user and individual post data.
+type Storage struct {
 	kv     kv.Store
 	prefix string
 
@@ -124,10 +125,10 @@ type Store struct {
 	hash     []byte
 }
 
-func NewStore(backend kv.Store, prefix string) *Store {
-	return &Store{
+func NewStorage(backend kv.Store, prefix string) *Storage {
+	return &Storage{
 		prefix: prefix,
-		kv: backend,
+		kv:     backend,
 	}
 }
 
@@ -135,9 +136,9 @@ const maxConcurrentLogins = 3
 const expirationInterval = 15 * time.Minute
 const secretLength = 32
 
-func (store *Store) HasTooManyLogins(user string) (bool, int, error) {
+func (storage *Storage) HasTooManyLogins(user string) (bool, int, error) {
 	// List all logins
-	loginkeys, _, err := store.kv.List(store.prefix + "_login_")
+	loginkeys, _, err := storage.kv.List(storage.prefix + "_login_")
 	if err != nil {
 		return false, -1, fmt.Errorf("fetch logins: %w", err)
 	}
@@ -145,7 +146,7 @@ func (store *Store) HasTooManyLogins(user string) (bool, int, error) {
 	concurrentLogins := 0
 	minDelay := -1
 	for _, key := range loginkeys {
-		data, err := store.kv.Fetch(key)
+		data, err := storage.kv.Fetch(key)
 		if err != nil {
 			return false, -1, fmt.Errorf("fetch login: %w", err)
 		}
@@ -156,7 +157,7 @@ func (store *Store) HasTooManyLogins(user string) (bool, int, error) {
 		}
 		// Drop verification if expired
 		if !login.Active() {
-			if err := store.kv.Delete(key); err != nil {
+			if err := storage.kv.Delete(key); err != nil {
 				return false, -1, fmt.Errorf("delete login: %w", err)
 			}
 			continue
@@ -173,15 +174,15 @@ func (store *Store) HasTooManyLogins(user string) (bool, int, error) {
 	return concurrentLogins >= maxConcurrentLogins, minDelay, nil
 }
 
-func (store *Store) HasActiveVerification(user string) (bool, error) {
+func (storage *Storage) HasActiveVerification(user string) (bool, error) {
 	// List all verifications
-	verifkeys, _, err := store.kv.List(store.prefix + "_verif_")
+	verifkeys, _, err := storage.kv.List(storage.prefix + "_verif_")
 	if err != nil {
 		return false, fmt.Errorf("fetch verifications: %w", err)
 	}
 	// Go through each verification and check
 	for _, key := range verifkeys {
-		data, err := store.kv.Fetch(key)
+		data, err := storage.kv.Fetch(key)
 		if err != nil {
 			return false, fmt.Errorf("fetch verification: %w", err)
 		}
@@ -192,7 +193,7 @@ func (store *Store) HasActiveVerification(user string) (bool, error) {
 		}
 		// Drop verification if expired
 		if !verification.Active() {
-			if err := store.kv.Delete(key); err != nil {
+			if err := storage.kv.Delete(key); err != nil {
 				return false, fmt.Errorf("delete verification: %w", err)
 			}
 		}
@@ -232,14 +233,14 @@ func (err WrongCodeError) Error() string {
 	return fmt.Sprintf("wrong code, attempt %d of %d", err.Attempt, err.MaxAttempts)
 }
 
-func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
+func (storage *Storage) ConfirmLogin(key, code string) (*Session, *Login, error) {
 	// Check that key is 32-byte hex string
 	if keyBytes, err := hex.DecodeString(key); err != nil || len(keyBytes) != 32 {
 		return nil, nil, ErrLoginInvalidKey
 	}
 	// Fetch login with given key
-	loginKey := fmt.Sprintf("%s_login_%s", store.prefix, key)
-	data, err := store.kv.Fetch(loginKey)
+	loginKey := fmt.Sprintf("%s_login_%s", storage.prefix, key)
+	data, err := storage.kv.Fetch(loginKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetch login: %w", err)
 	}
@@ -251,7 +252,7 @@ func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
 	login.Attempt++
 	if !login.Active() {
 		// Delete login and say login is expired
-		if err := store.kv.Delete(loginKey); err != nil {
+		if err := storage.kv.Delete(loginKey); err != nil {
 			return nil, nil, fmt.Errorf("delete login: %w", err)
 		}
 		return nil, nil, ErrLoginExpired
@@ -260,7 +261,7 @@ func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode login: %w", err)
 	}
-	if err := store.kv.Put(loginKey, data); err != nil {
+	if err := storage.kv.Put(loginKey, data); err != nil {
 		return nil, nil, fmt.Errorf("store login: %w", err)
 	}
 	// Make sure that code matches
@@ -268,7 +269,7 @@ func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
 		return nil, &login, WrongCodeError{Attempt: login.Attempt, MaxAttempts: LoginMaxAttempts}
 	}
 	// Delete login, turn into session
-	if err := store.kv.Delete(loginKey); err != nil {
+	if err := storage.kv.Delete(loginKey); err != nil {
 		return nil, nil, fmt.Errorf("delete login: %w", err)
 	}
 	session := Session{
@@ -280,24 +281,24 @@ func (store *Store) ConfirmLogin(key, code string) (*Session, *Login, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal session: %w", err)
 	}
-	sessionKey := fmt.Sprintf("%s_session_%s", store.prefix, key)
-	if err := store.kv.Put(sessionKey, data); err != nil {
+	sessionKey := fmt.Sprintf("%s_session_%s", storage.prefix, key)
+	if err := storage.kv.Put(sessionKey, data); err != nil {
 		return nil, nil, fmt.Errorf("store session: %w", err)
 	}
 	return &session, &login, nil
 }
 
-func (store *Store) DeleteSession(key string) error {
+func (storage *Storage) DeleteSession(key string) error {
 	// Check if key with session exists
-	if err := store.kv.Delete(fmt.Sprintf("%s_session_%s", store.prefix, key)); err != nil {
+	if err := storage.kv.Delete(fmt.Sprintf("%s_session_%s", storage.prefix, key)); err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
 	return nil
 }
 
-func (store *Store) VerifySession(key string) (string, error) {
+func (storage *Storage) VerifySession(key string) (string, error) {
 	// Fetch session
-	data, err := store.kv.Fetch(fmt.Sprintf("%s_session_%s", store.prefix, key))
+	data, err := storage.kv.Fetch(fmt.Sprintf("%s_session_%s", storage.prefix, key))
 	if err != nil {
 		return "", fmt.Errorf("fetch session: %w", err)
 	}
@@ -307,7 +308,7 @@ func (store *Store) VerifySession(key string) (string, error) {
 	}
 	// Make sure that session is active, else delete
 	if !session.Active() {
-		if err := store.DeleteSession(key); err != nil {
+		if err := storage.DeleteSession(key); err != nil {
 			return "", err
 		}
 		return "", nil
@@ -316,7 +317,7 @@ func (store *Store) VerifySession(key string) (string, error) {
 	return session.User, nil
 }
 
-func (store *Store) AttemptLogin(user string) (*Login, error) {
+func (storage *Storage) AttemptLogin(user string) (*Login, error) {
 	// Generate login key
 	keyBytes := make([]byte, loginKeyLen)
 	rand.Read(keyBytes)
@@ -340,14 +341,14 @@ func (store *Store) AttemptLogin(user string) (*Login, error) {
 		return nil, fmt.Errorf("marshal login: %w", err)
 	}
 	// Store in KV
-	key := fmt.Sprintf("%s_login_%s", store.prefix, keyString)
-	if err := store.kv.Put(key, loginJSON); err != nil {
+	key := fmt.Sprintf("%s_login_%s", storage.prefix, keyString)
+	if err := storage.kv.Put(key, loginJSON); err != nil {
 		return nil, fmt.Errorf("store login: %w", err)
 	}
 	return login, nil
 }
 
-func (store *Store) Verify(secret string) error {
+func (storage *Storage) Verify(secret string) error {
 	// Attempt to decode secret and verify length
 	secretBytes, err := hex.DecodeString(secret)
 	if err != nil {
@@ -358,8 +359,8 @@ func (store *Store) Verify(secret string) error {
 	}
 	// Retrieve verification and decode
 	var verif Verification
-	key := fmt.Sprintf("%s_verif_%s", store.prefix, secret)
-	verifdata, err := store.kv.Fetch(key)
+	key := fmt.Sprintf("%s_verif_%s", storage.prefix, secret)
+	verifdata, err := storage.kv.Fetch(key)
 	if err != nil {
 		return fmt.Errorf("fetch verification: %w", err)
 	}
@@ -371,123 +372,123 @@ func (store *Store) Verify(secret string) error {
 		return fmt.Errorf("verification expired")
 	}
 	// Delete verification from store
-	if err := store.kv.Delete(key); err != nil {
+	if err := storage.kv.Delete(key); err != nil {
 		return fmt.Errorf("delete verification: %w", err)
 	}
-	return store.InsertTalk(verif.Talk)
+	return storage.InsertTalk(verif.Talk)
 }
 
-func (store *Store) DeleteTalk(id int64) error {
+func (storage *Storage) DeleteTalk(id int64) error {
 	if id == 0 {
 		return fmt.Errorf("talk id required")
 	}
-	talkkey := fmt.Sprintf("%s_talks_%d", store.prefix, id)
-	if err := store.kv.Delete(talkkey); err != nil {
+	talkkey := fmt.Sprintf("%s_talks_%d", storage.prefix, id)
+	if err := storage.kv.Delete(talkkey); err != nil {
 		return fmt.Errorf("delete talk: %w", err)
 	}
 
 	// Clear cache
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
 
 	// Clear hash, drop talk from cache
-	store.hash = nil
-	delete(store.cachemap, id)
-	for i, j := 0, 0; i < len(store.cache); i++ {
-		if store.cache[i].ID != id {
-			store.cache[j] = store.cache[i]
+	storage.hash = nil
+	delete(storage.cachemap, id)
+	for i, j := 0, 0; i < len(storage.cache); i++ {
+		if storage.cache[i].ID != id {
+			storage.cache[j] = storage.cache[i]
 			j++
 		}
 	}
-	store.cache = store.cache[:len(store.cache)-1]
+	storage.cache = storage.cache[:len(storage.cache)-1]
 	return nil
 }
 
-func (store *Store) UpdateTalk(talk *Talk) error {
+func (storage *Storage) UpdateTalk(talk *Talk) error {
 	if talk.ID == 0 {
 		return fmt.Errorf("talk id required")
 	}
-	talkkey := fmt.Sprintf("%s_talks_%d", store.prefix, talk.ID)
+	talkkey := fmt.Sprintf("%s_talks_%d", storage.prefix, talk.ID)
 	talkdata, err := json.Marshal(talk)
 	if err != nil {
 		return fmt.Errorf("encode talk: %w", err)
 	}
-	if err := store.kv.Put(talkkey, talkdata); err != nil {
+	if err := storage.kv.Put(talkkey, talkdata); err != nil {
 		return fmt.Errorf("store talk: %w", err)
 	}
 	// Clear cache
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
 
 	// Clear hash, drop talk from cache
-	store.hash = nil
-	delete(store.cachemap, talk.ID)
-	for i, j := 0, 0; i < len(store.cache); i++ {
-		if store.cache[i].ID != talk.ID {
-			store.cache[j] = store.cache[i]
+	storage.hash = nil
+	delete(storage.cachemap, talk.ID)
+	for i, j := 0, 0; i < len(storage.cache); i++ {
+		if storage.cache[i].ID != talk.ID {
+			storage.cache[j] = storage.cache[i]
 			j++
 		}
 	}
-	store.cache = store.cache[:len(store.cache)-1]
+	storage.cache = storage.cache[:len(storage.cache)-1]
 	return nil
 }
 
-func (store *Store) InsertTalk(talk *Talk) error {
+func (storage *Storage) InsertTalk(talk *Talk) error {
 	// Generate ID for talk
-	id, err := store.kv.AtomicInc(store.prefix + "_count")
+	id, err := storage.kv.AtomicInc(storage.prefix + "_count")
 	if err != nil {
 		return fmt.Errorf("generate id: %w", err)
 	}
 	talk.ID = id
 	// Insert talk
-	talkkey := fmt.Sprintf("%s_talks_%d", store.prefix, talk.ID)
+	talkkey := fmt.Sprintf("%s_talks_%d", storage.prefix, talk.ID)
 	talkdata, err := json.Marshal(talk)
 	if err != nil {
 		return fmt.Errorf("encode talk: %w", err)
 	}
-	if err := store.kv.Put(talkkey, talkdata); err != nil {
+	if err := storage.kv.Put(talkkey, talkdata); err != nil {
 		return fmt.Errorf("store talk: %w", err)
 	}
 	return nil
 }
 
-func (store *Store) Talk(id int64) (*Talk, error) {
+func (storage *Storage) Talk(id int64) (*Talk, error) {
 	// List talks
-	talkkeys, hash, err := store.kv.List(store.prefix + "_talks_")
+	talkkeys, hash, err := storage.kv.List(storage.prefix + "_talks_")
 	if err != nil {
 		return nil, fmt.Errorf("list talks: %w", err)
 	}
 
 	// Compute hash before parsing, compare with current one
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if bytes.Equal(hash, store.hash) {
-		return store.cachemap[id], nil
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	if bytes.Equal(hash, storage.hash) {
+		return storage.cachemap[id], nil
 	}
 
 	// Else update cache
 	logrus.WithFields(logrus.Fields{
 		"got_hash":      hex.EncodeToString(hash),
-		"expected_hash": hex.EncodeToString(store.hash),
+		"expected_hash": hex.EncodeToString(storage.hash),
 	}).Debug("Mismatching hashes, updating cache")
-	if err := store.updateCache(talkkeys, hash); err != nil {
+	if err := storage.updateCache(talkkeys, hash); err != nil {
 		return nil, fmt.Errorf("update cache: %w", err)
 	}
 
-	return store.cachemap[id], nil
+	return storage.cachemap[id], nil
 }
 
 const numUpdateCacheWorkers = 8
 
 // mu must be held before calling
-func (store *Store) updateCache(keys []string, hash []byte) error {
+func (storage *Storage) updateCache(keys []string, hash []byte) error {
 	// Start measuring update cache op
 	opStart := time.Now()
 
 	// Generate list of kept talks
 	cached := make(map[string]int)
-	for i := range store.cache {
-		key := fmt.Sprintf("%s_talks_%d", store.prefix, store.cache[i].ID)
+	for i := range storage.cache {
+		key := fmt.Sprintf("%s_talks_%d", storage.prefix, storage.cache[i].ID)
 		cached[key] = i
 	}
 
@@ -504,7 +505,7 @@ func (store *Store) updateCache(keys []string, hash []byte) error {
 	for i := 0; i < numUpdateCacheWorkers; i++ {
 		group.Go(func() error {
 			for wqi := range workQueue {
-				talkdata, err := store.kv.Fetch(wqi.Key)
+				talkdata, err := storage.kv.Fetch(wqi.Key)
 				if err != nil {
 					return fmt.Errorf("fetch talk: %w", err)
 				}
@@ -520,7 +521,7 @@ func (store *Store) updateCache(keys []string, hash []byte) error {
 	diffcount := 0
 	for i, key := range keys {
 		if j, ok := cached[key]; ok {
-			talks[i] = store.cache[j]
+			talks[i] = storage.cache[j]
 		} else {
 			talks[i] = &Talk{}
 			workQueue <- workQueueItem{Index: i, Key: key}
@@ -539,9 +540,9 @@ func (store *Store) updateCache(keys []string, hash []byte) error {
 		talkmap[talks[i].ID] = talks[i]
 	}
 	// Update cache and hash
-	store.hash = hash
-	store.cache = talks
-	store.cachemap = talkmap
+	storage.hash = hash
+	storage.cache = talks
+	storage.cachemap = talkmap
 
 	// Report status in log
 	opEnd := time.Now()
@@ -553,8 +554,8 @@ func (store *Store) updateCache(keys []string, hash []byte) error {
 	return nil
 }
 
-func (store *Store) UpcomingTalks() ([]*Talk, error) {
-	talks, err := store.Talks()
+func (storage *Storage) UpcomingTalks() ([]*Talk, error) {
+	talks, err := storage.Talks()
 	if err != nil {
 		return nil, err
 	}
@@ -571,36 +572,36 @@ func (store *Store) UpcomingTalks() ([]*Talk, error) {
 	return talks[:i], nil
 }
 
-func (store *Store) Talks() ([]*Talk, error) {
+func (storage *Storage) Talks() ([]*Talk, error) {
 	// List talks
-	talkkeys, hash, err := store.kv.List(store.prefix + "_talks_")
+	talkkeys, hash, err := storage.kv.List(storage.prefix + "_talks_")
 	if err != nil {
 		return nil, fmt.Errorf("list talks: %w", err)
 	}
 
 	// Compute hash before parsing, compare with current one
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
 
-	slice := make([]*Talk, len(store.cache))
-	copy(slice, store.cache)
+	slice := make([]*Talk, len(storage.cache))
+	copy(slice, storage.cache)
 
-	if bytes.Equal(hash, store.hash) {
+	if bytes.Equal(hash, storage.hash) {
 		return slice, nil
 	}
 
 	// Else update cache
-	if err := store.updateCache(talkkeys, hash); err != nil {
+	if err := storage.updateCache(talkkeys, hash); err != nil {
 		return nil, fmt.Errorf("update cache: %w", err)
 	}
 
-	slice = make([]*Talk, len(store.cache))
-	copy(slice, store.cache)
+	slice = make([]*Talk, len(storage.cache))
+	copy(slice, storage.cache)
 	return slice, nil
 }
 
-func (store *Store) User(id string) (*User, error) {
-	userdata, err := store.kv.Fetch(store.prefix + "_users_" + id)
+func (storage *Storage) User(id string) (*User, error) {
+	userdata, err := storage.kv.Fetch(storage.prefix + "_users_" + id)
 	if err != nil {
 		return nil, err
 	}

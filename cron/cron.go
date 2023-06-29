@@ -25,8 +25,8 @@ func run() error {
 			Token:   os.Getenv("VALAR_TOKEN"),
 			Project: os.Getenv("VALAR_PROJECT"),
 		})
-	store := structs.NewStore(kvBackend, os.Getenv("VALAR_PREFIX"))
-	talks, err := store.Talks()
+	storage := structs.NewStorage(kvBackend, os.Getenv("VALAR_PREFIX"))
+	talks, err := storage.Talks()
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func run() error {
 				continue
 			}
 			// now we can feed it
-			if err := store.InsertTalk(talk); err != nil {
+			if err := storage.InsertTalk(talk); err != nil {
 				return err
 			}
 			fmt.Println("Inserted talk", talk.Title)

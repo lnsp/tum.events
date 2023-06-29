@@ -14,8 +14,8 @@ type Auth interface {
 }
 
 type MailBasedAuth struct {
-	Store *structs.Store
-	Mail  mail.Provider
+	Storage *structs.Storage
+	Mail    mail.Provider
 }
 
 var userRegex = regexp.MustCompile(`^[a-z]{2}[0-9]{2}[a-z]{3}$`)
@@ -26,7 +26,7 @@ func (provider *MailBasedAuth) Login(user string) (*structs.Login, error) {
 	}
 
 	// Check that there is no active login attempt
-	active, timeout, err := provider.Store.HasTooManyLogins(user)
+	active, timeout, err := provider.Storage.HasTooManyLogins(user)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to check login attempts")
 		return nil, err
@@ -36,7 +36,7 @@ func (provider *MailBasedAuth) Login(user string) (*structs.Login, error) {
 	}
 
 	// Create login attempt
-	login, err := provider.Store.AttemptLogin(user)
+	login, err := provider.Storage.AttemptLogin(user)
 	if err != nil {
 		logrus.WithError(err).Error("Failed to create login")
 		return nil, err
@@ -52,6 +52,6 @@ func (provider *MailBasedAuth) Login(user string) (*structs.Login, error) {
 }
 
 func (provider *MailBasedAuth) LoginWithCode(key, code string) (*structs.Session, error) {
-	session, _, err := provider.Store.ConfirmLogin(key, code)
+	session, _, err := provider.Storage.ConfirmLogin(key, code)
 	return session, err
 }
