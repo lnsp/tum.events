@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gorilla/csrf"
 	"github.com/gorilla/mux"
 	"github.com/lnsp/tumtalks/auth"
 	"github.com/lnsp/tumtalks/kv"
@@ -104,7 +105,9 @@ func main() {
 	}
 	httpsOnly := os.Getenv("ROUTER_HTTPSONLY") != ""
 	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
-	router := NewRouter(publicURL, storage, authProvider, httpsOnly, publicDomainOnly)
+	csrf := csrf.Protect(
+		[]byte(os.Getenv("ROUTER_CSRFKEY")), csrf.Secure(!debugMode))
+	router := NewRouter(publicURL, storage, authProvider, httpsOnly, publicDomainOnly, csrf)
 	router.setup()
 	if debugMode {
 		router.setupDebugRoutes(kvBackend)
@@ -143,6 +146,7 @@ type Router struct {
 	httpsOnly        bool
 	publicDomainOnly bool
 	auth             auth.Auth
+	middleware       []mux.MiddlewareFunc
 
 	templates map[string]*template.Template
 }
@@ -188,30 +192,34 @@ func (router *Router) setupDebugRoutes(kv kv.Store) {
 
 func (router *Router) setup() {
 	// setup routes
-	router.mux.Handle("/", router.top()).Methods("GET")
-	router.mux.Handle("/top", router.top()).Methods("GET")
-	router.mux.Handle("/nextup", router.nextup()).Methods("GET")
-	router.mux.Handle("/filter", router.filter()).Methods("GET")
-	router.mux.Handle("/categories", router.categories()).Methods("GET")
-	router.mux.Handle("/talk", router.downloadTalk()).Methods("GET").Queries("id", "{id:[0-9]+}", "format", "ics")
-	router.mux.Handle("/talk", router.talk()).Methods("GET").Queries("id", "{id:[0-9]+}")
-	router.mux.Handle("/edit", router.edit()).Methods("GET").Queries("id", "{id:[0-9]+}")
-	router.mux.Handle("/edit", router.editForm()).Methods("POST").Queries("id", "{id:[0-9]+}")
-	router.mux.Handle("/submit", router.submit()).Methods("GET")
-	router.mux.Handle("/submit", router.submitForm()).Methods("POST")
-	router.mux.Handle("/verify/{secret}", router.confirm()).Methods("GET")
-	router.mux.Handle("/verify/{secret}", router.verify()).Methods("POST")
-	router.mux.Handle("/styles.css", router.styles()).Methods("GET")
-	router.mux.Handle("/favicon.png", router.favicon()).Methods("GET")
-	router.mux.Handle("/legal", router.legal()).Methods("GET")
-	router.mux.Handle("/login", router.loginWithCode()).Methods("POST").Queries("method", "code")
-	router.mux.Handle("/login", router.login()).Methods("GET")
-	router.mux.Handle("/login", router.loginForm()).Methods("POST")
-	router.mux.Handle("/logout", router.logout()).Methods("POST")
+	frontend := router.mux.PathPrefix("/").Subrouter()
+	for _, mw := range router.middleware {
+		frontend.Use(mw)
+	}
+	frontend.Handle("/", router.top()).Methods("GET")
+	frontend.Handle("/top", router.top()).Methods("GET")
+	frontend.Handle("/nextup", router.nextup()).Methods("GET")
+	frontend.Handle("/filter", router.filter()).Methods("GET")
+	frontend.Handle("/categories", router.categories()).Methods("GET")
+	frontend.Handle("/talk", router.downloadTalk()).Methods("GET").Queries("id", "{id:[0-9]+}", "format", "ics")
+	frontend.Handle("/talk", router.talk()).Methods("GET").Queries("id", "{id:[0-9]+}")
+	frontend.Handle("/edit", router.edit()).Methods("GET").Queries("id", "{id:[0-9]+}")
+	frontend.Handle("/edit", router.editForm()).Methods("POST").Queries("id", "{id:[0-9]+}")
+	frontend.Handle("/submit", router.submit()).Methods("GET")
+	frontend.Handle("/submit", router.submitForm()).Methods("POST")
+	frontend.Handle("/verify/{secret}", router.confirm()).Methods("GET")
+	frontend.Handle("/verify/{secret}", router.verify()).Methods("POST")
+	frontend.Handle("/styles.css", router.styles()).Methods("GET")
+	frontend.Handle("/favicon.png", router.favicon()).Methods("GET")
+	frontend.Handle("/legal", router.legal()).Methods("GET")
+	frontend.Handle("/login", router.loginWithCode()).Methods("POST").Queries("method", "code")
+	frontend.Handle("/login", router.login()).Methods("GET")
+	frontend.Handle("/login", router.loginForm()).Methods("POST")
+	frontend.Handle("/logout", router.logout()).Methods("POST")
 
 	// setup api routes
-	apiRouter := router.mux.PathPrefix("/api").Subrouter()
-	apiRouter.Handle("/talks", router.apiTalks()).Methods("GET")
+	api := router.mux.PathPrefix("/api").Subrouter()
+	api.Handle("/talks", router.apiTalks()).Methods("GET")
 
 	// parse templates
 	router.templates = make(map[string]*template.Template)
@@ -424,6 +432,7 @@ func (router *Router) editForm() http.Handler {
 				logrus.WithError(err).Error("Failed to delete talk")
 				return
 			}
+			http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 			return
 		}
 		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
@@ -636,6 +645,7 @@ type baseCtx struct {
 	Error      string
 	Login      string
 	SessionKey string
+	CSRFToken  template.HTML
 }
 
 func (a *baseCtx) Authenticated() bool {
@@ -650,7 +660,7 @@ func dropSessionCookie(w http.ResponseWriter) {
 }
 
 func (router *Router) baseCtx(w http.ResponseWriter, r *http.Request) baseCtx {
-	ctx := baseCtx{Build: buildID}
+	ctx := baseCtx{Build: buildID, CSRFToken: csrf.TemplateField(r)}
 	// Get request session cookie
 	cookie, err := r.Cookie(sessionCookie)
 	if err == http.ErrNoCookie {
@@ -1008,7 +1018,7 @@ func (router *Router) apiTalks() http.Handler {
 	})
 }
 
-func NewRouter(publicURL *url.URL, storage *structs.Storage, auth auth.Auth, httpsOnly, publicDomainOnly bool) *Router {
+func NewRouter(publicURL *url.URL, storage *structs.Storage, auth auth.Auth, httpsOnly, publicDomainOnly bool, middleware ...mux.MiddlewareFunc) *Router {
 	return &Router{
 		mux:              mux.NewRouter(),
 		publicURL:        publicURL,
@@ -1016,6 +1026,7 @@ func NewRouter(publicURL *url.URL, storage *structs.Storage, auth auth.Auth, htt
 		httpsOnly:        httpsOnly,
 		publicDomainOnly: publicDomainOnly,
 		auth:             auth,
+		middleware:       middleware,
 	}
 }
 

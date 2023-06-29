@@ -35,7 +35,10 @@
         {{ if .Login }}
         <span>{{ .Login }}</span>
         <span>|</span>
-        <form action="/logout" method="POST"><button role="submit">logout</button></form>
+        <form action="/logout" method="POST">
+          {{ .CSRFToken }}
+          <button role="submit">logout</button>
+        </form>
         {{ else }}
         <a href="/login">login</a>
         {{ end }}

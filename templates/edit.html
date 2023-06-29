@@ -1,6 +1,7 @@
 {{ define "title" }}Edit &mdash; TUM Events{{ end }}
 {{ define "content" }}
-<form action="" method="POST" class="p-2">
+<form method="POST" class="p-2">
+  {{ .CSRFToken }}
   {{ with .Error }}
   <div class="mb-3 text-gray-600 flex gap-2 items-center"><span class="flex items-center justify-center w-6 h-6 bg-gray-600 text-white font-bold">!</span>{{ . }}</div>
   {{ end }}

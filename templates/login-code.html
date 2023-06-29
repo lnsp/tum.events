@@ -6,6 +6,7 @@
   {{ end }}
   <div class="mb-3">You should have received an email with a confirmation code. Please enter it below.</div>
   <div class="flex gap-2">
+    {{ .CSRFToken }}
     <input type="hidden" name="key" value="{{ .Key }}">
     <label for="code">Code</label>
     <div class="flex-grow">
