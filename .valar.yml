@@ -6,6 +6,7 @@ build:
         - .valar.yml
         - .git
         - node_modules
+        - dbdump
     environment:
         - key: GO_GENERATE
           value: "true"

@@ -5,3 +5,13 @@
 html, body {
     @apply min-h-full;
 }
+
+@layer components {
+    .talk-body :is(h1, h2, h3, h4, h5, h6, h7) {
+        @apply font-medium;
+    }
+
+    .talk-body :is(pre) {
+        @apply border-l-2 border-gray-300 pl-2 bg-gray-200 text-sm py-1;
+    }
+}

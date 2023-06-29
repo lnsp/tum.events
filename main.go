@@ -106,6 +106,9 @@ func main() {
 	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
 	router := NewRouter(publicURL, storage, authProvider, httpsOnly, publicDomainOnly)
 	router.setup()
+	if debugMode {
+		router.setupDebugRoutes(kvBackend)
+	}
 	server := &http.Server{
 		Addr:         ":8080",
 		ReadTimeout:  time.Minute,
@@ -142,6 +145,45 @@ type Router struct {
 	auth             auth.Auth
 
 	templates map[string]*template.Template
+}
+
+func (router *Router) setupDebugRoutes(kv kv.Store) {
+	router.mux.HandleFunc("/debug/dump", func(wr http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodGet:
+			keys, _, err := kv.List("")
+			if err != nil {
+				http.Error(wr, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			kvs := map[string]string{}
+			for _, key := range keys {
+				value, err := kv.Fetch(key)
+				if err != nil {
+					http.Error(wr, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				kvs[key] = string(value)
+			}
+			if err := json.NewEncoder(wr).Encode(kvs); err != nil {
+				http.Error(wr, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		case http.MethodPost:
+			kvs := map[string]string{}
+			if err := json.NewDecoder(req.Body).Decode(&kvs); err != nil {
+				http.Error(wr, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			for key, value := range kvs {
+				if err := kv.Put(key, []byte(value)); err != nil {
+					http.Error(wr, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+			wr.WriteHeader(http.StatusOK)
+		}
+	}).Methods("GET", "POST")
 }
 
 func (router *Router) setup() {

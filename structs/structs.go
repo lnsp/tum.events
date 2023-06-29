@@ -103,8 +103,7 @@ var sanitizePolicy = bluemonday.NewPolicy()
 func init() {
 	sanitizePolicy.AllowStandardURLs()
 	sanitizePolicy.AllowLists()
-	sanitizePolicy.AllowElements("h2", "h3", "h4", "h5", "h6", "h7")
-	sanitizePolicy.AllowElements("p", "a")
+	sanitizePolicy.AllowElements("p", "pre", "code")
 }
 
 func (t *Talk) RenderAsHTML() string {

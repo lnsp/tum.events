@@ -17,7 +17,7 @@
         <span class="text-xs">{{ $t.Date | humandate }}</span>
         |
         <a class="text-gray-500 text-xs hover:underline"
-           href="/categories/{{ $t.Category }}">[{{ $t.Category }}]</a>
+           href="/filter?category={{ $t.Category }}">[{{ $t.Category }}]</a>
         {{ if $t.Body }}
         |
         <a class="text-gray-500 text-xs hover:underline"

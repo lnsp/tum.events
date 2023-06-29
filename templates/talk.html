@@ -13,7 +13,7 @@
         <span>{{ .Talk.Date | humandate }}</span>
         |
         <a class="text-gray-500 text-xs hover:underline"
-           href="/categories/{{ .Talk.Category }}">[{{ .Talk.Category }}]</a>
+           href="/filter?category={{ .Talk.Category }}">[{{ .Talk.Category }}]</a>
         {{ if eq .Talk.User .Login }}
         |
         <a class="text-gray-500 text-xs hover:underline"
@@ -25,6 +25,6 @@
       </div>
     </div>
   </div>
-  <div class="mt-3 ml-9 sm:ml-10 flex text-gray-900 flex-col gap-2">{{ .Talk.Body }}</div>
+  <div class="mt-3 ml-9 sm:ml-10 flex text-gray-900 flex-col gap-2 talk-body">{{ .Talk.Body }}</div>
 </div>
 {{ end }}
