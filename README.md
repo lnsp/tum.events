@@ -1,6 +1,6 @@
 # TUM Events
 
-This is the source repository for the TUM Events service.
+This is the source repository for the TUM Events service available at [tum.events](https://tum.events). 
 
 ## Public sources
 - https://www.net.in.tum.de/talks/
