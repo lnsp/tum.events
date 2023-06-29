@@ -428,11 +428,11 @@ func (router *Router) editForm() http.Handler {
 		// If we want to delete the post, thats easy!
 		if delete := r.Form.Get("delete"); delete != "" {
 			if err := router.storage.DeleteTalk(id); err != nil {
-				http.Error(w, "could not delete talk", http.StatusInternalServerError)
+				showError("Failed to delete talk. Please try again later.", http.StatusInternalServerError)
 				logrus.WithError(err).Error("Failed to delete talk")
 				return
 			}
-			http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
 		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
@@ -609,9 +609,12 @@ func (router *Router) loginWithCode() http.Handler {
 		}
 		// Set session cookie
 		http.SetCookie(w, &http.Cookie{
-			Name:    "session",
-			Value:   session.Key,
-			Expires: session.Expiration,
+			Name:     "session",
+			Value:    session.Key,
+			Expires:  session.Expiration,
+			Secure:   router.httpsOnly,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
 		})
 		// Redirect to home site
 		http.Redirect(w, r, "/", http.StatusSeeOther)
