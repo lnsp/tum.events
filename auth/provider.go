@@ -2,7 +2,6 @@ package auth
 
 import (
 	"regexp"
-	"time"
 
 	"github.com/lnsp/tumtalks/mail"
 	"github.com/lnsp/tumtalks/structs"
@@ -12,18 +11,6 @@ import (
 type Provider interface {
 	Login(user string) (*structs.Login, error)
 	LoginWithCode(key, code string) (*structs.Session, error)
-}
-
-type DebugProvider struct{}
-
-func (provider *DebugProvider) Login(user string) (*structs.Login, error) {
-	return &structs.Login{
-		Key: "123456",
-	}, nil
-}
-
-func (provider *DebugProvider) LoginWithCode(key, code string) (*structs.Session, error) {
-	return &structs.Session{Expiration: time.Now().Add(time.Hour), User: "tu00mm", Key: key}, nil
 }
 
 type VerifiedProvider struct {

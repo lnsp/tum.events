@@ -93,13 +93,9 @@ func main() {
 	}
 
 	store := structs.NewStore(kvBackend, os.Getenv("VALAR_PREFIX"))
-
-	authProvider := auth.Provider(&auth.DebugProvider{})
-	if !debugMode {
-		authProvider = &auth.VerifiedProvider{
-			Mail:  mailProvider,
-			Store: store,
-		}
+	authProvider := &auth.VerifiedProvider{
+		Mail:  mailProvider,
+		Store: store,
 	}
 
 	publicURL, err := url.Parse(os.Getenv("ROUTER_PUBLICURL"))
