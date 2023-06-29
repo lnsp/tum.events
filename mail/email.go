@@ -38,7 +38,7 @@ type Provider interface {
 type DebugProvider struct{}
 
 func (dp *DebugProvider) SendLogin(user, code string) error {
-	logrus.WithFields(logrus.Fields{"user": user, "code": code}).Debug("Request dummy login email")
+	logrus.WithFields(logrus.Fields{"user": user, "code": code}).Info("Request dummy login email")
 	return nil
 }
 
