@@ -21,6 +21,7 @@ import (
 	"github.com/gorilla/csrf"
 	"github.com/gorilla/mux"
 	"github.com/lnsp/tumtalks/auth"
+	"github.com/lnsp/tumtalks/handlers"
 	"github.com/lnsp/tumtalks/kv"
 	"github.com/lnsp/tumtalks/mail"
 	"github.com/lnsp/tumtalks/structs"
@@ -218,8 +219,8 @@ func (router *Router) setup() {
 	frontend.Handle("/logout", router.logout()).Methods("POST")
 
 	// setup api routes
-	api := router.mux.PathPrefix("/api").Subrouter()
-	api.Handle("/talks", router.apiTalks()).Methods("GET")
+	apiHandler := &handlers.API{Storage: router.storage}
+	apiHandler.Setup(router.mux.PathPrefix("/api").Subrouter())
 
 	// parse templates
 	router.templates = make(map[string]*template.Template)
@@ -980,42 +981,6 @@ func (router *Router) filter() http.Handler {
 		}
 		if err := router.templates["filter.html"].Execute(w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) apiTalks() http.Handler {
-	type apiTalk struct {
-		User     string    `json:"user"`
-		Title    string    `json:"title"`
-		Category string    `json:"category"`
-		Date     time.Time `json:"date"`
-		Link     string    `json:"link,omitempty"`
-		Body     string    `json:"body,omitempty"`
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		talks, err := router.storage.UpcomingTalks()
-		if err != nil {
-			logrus.WithError(err).Error("Failed to get upcoming talks")
-			http.Error(w, "failed to get data", http.StatusInternalServerError)
-			return
-		}
-		// Reconstruct as API talks
-		apiTalks := make([]*apiTalk, len(talks))
-		for i, t := range talks {
-			apiTalks[i] = &apiTalk{
-				User:     t.User,
-				Title:    t.Title,
-				Category: t.Category,
-				Date:     t.Date,
-				Link:     t.Link,
-				Body:     t.Body,
-			}
-		}
-		if err := json.NewEncoder(w).Encode(apiTalks); err != nil {
-			logrus.WithError(err).Error("Failed to encode response")
-			http.Error(w, "failed to encode response", http.StatusInternalServerError)
 			return
 		}
 	})
