@@ -1,22 +1,14 @@
 package main
 
 import (
-	"embed"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
-	"regexp"
 	"runtime"
-	"sort"
-	"strconv"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/gorilla/csrf"
 	"github.com/gorilla/mux"
@@ -25,44 +17,12 @@ import (
 	"github.com/lnsp/tumtalks/kv"
 	"github.com/lnsp/tumtalks/mail"
 	"github.com/lnsp/tumtalks/structs"
+	"github.com/lnsp/tumtalks/templates"
 	"github.com/sirupsen/logrus"
 
+	_ "embed"
 	_ "time/tzdata"
-
-	ics "github.com/arran4/golang-ical"
 )
-
-//go:embed favicon.png
-var favicon []byte
-
-//go:embed templates/*.html
-var webTemplates embed.FS
-
-var talkCategories = []string{
-	"software-engineering",
-	"distributed-systems",
-	"programming-languages",
-	"databases",
-	"scientific-computing",
-	"robotics",
-	"artificial-intelligence",
-	"automata-theory",
-	"computer-networks",
-	"computer-vision",
-	"computer-architecture",
-	"bioinformatics",
-	"operating-systems",
-	"data-structures",
-	"computer-graphics",
-	"medicine",
-	"computer-security",
-	"logic",
-	"data-analytics",
-	"machine-learning",
-	"formal-methods",
-	"master-thesis",
-	"bachelor-thesis",
-}
 
 //go:generate sh -c "/bin/echo -n $VALAR_BUILD | head -c 8 > version.txt"
 //go:embed version.txt
@@ -99,16 +59,27 @@ func main() {
 		Mail:    mailProvider,
 		Storage: storage,
 	}
+	session := &auth.Session{
+		Storage:   storage,
+		HTTPSOnly: os.Getenv("ROUTER_HTTPSONLY") != "",
+	}
 
 	publicURL, err := url.Parse(os.Getenv("ROUTER_PUBLICURL"))
 	if err != nil {
 		logrus.WithError(err).Fatal("public url is invalid")
 	}
-	httpsOnly := os.Getenv("ROUTER_HTTPSONLY") != ""
 	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
 	csrf := csrf.Protect(
 		[]byte(os.Getenv("ROUTER_CSRFKEY")), csrf.Secure(!debugMode))
-	router := NewRouter(publicURL, storage, authProvider, httpsOnly, publicDomainOnly, csrf)
+	router := &Router{
+		mux:              mux.NewRouter(),
+		publicURL:        publicURL,
+		storage:          storage,
+		session:          session,
+		publicDomainOnly: publicDomainOnly,
+		auth:             authProvider,
+		middleware:       []mux.MiddlewareFunc{csrf},
+	}
 	router.setup()
 	if debugMode {
 		router.setupDebugRoutes(kvBackend)
@@ -124,32 +95,14 @@ func main() {
 	}
 }
 
-var templateFuncs = template.FuncMap{
-	"humandate": func(t time.Time) string {
-		return t.Format("02.01.2006 15:04")
-	},
-	"formdate": func(t time.Time) string {
-		location, _ := time.LoadLocation("Europe/Berlin")
-		return t.In(location).Format(localTimeFormat)
-	},
-	"inc": func(i int) int {
-		return i + 1
-	},
-}
-
-//go:embed templates/tailwind.min.css
-var tailwindStyles []byte
-
 type Router struct {
 	publicURL        *url.URL
 	mux              *mux.Router
 	storage          *structs.Storage
-	httpsOnly        bool
 	publicDomainOnly bool
 	auth             auth.Auth
+	session          *auth.Session
 	middleware       []mux.MiddlewareFunc
-
-	templates map[string]*template.Template
 }
 
 func (router *Router) setupDebugRoutes(kv kv.Store) {
@@ -197,805 +150,35 @@ func (router *Router) setup() {
 	for _, mw := range router.middleware {
 		frontend.Use(mw)
 	}
-	frontend.Handle("/", router.top()).Methods("GET")
-	frontend.Handle("/top", router.top()).Methods("GET")
-	frontend.Handle("/nextup", router.nextup()).Methods("GET")
-	frontend.Handle("/filter", router.filter()).Methods("GET")
-	frontend.Handle("/categories", router.categories()).Methods("GET")
-	frontend.Handle("/talk", router.downloadTalk()).Methods("GET").Queries("id", "{id:[0-9]+}", "format", "ics")
-	frontend.Handle("/talk", router.talk()).Methods("GET").Queries("id", "{id:[0-9]+}")
-	frontend.Handle("/edit", router.edit()).Methods("GET").Queries("id", "{id:[0-9]+}")
-	frontend.Handle("/edit", router.editForm()).Methods("POST").Queries("id", "{id:[0-9]+}")
-	frontend.Handle("/submit", router.submit()).Methods("GET")
-	frontend.Handle("/submit", router.submitForm()).Methods("POST")
-	frontend.Handle("/verify/{secret}", router.confirm()).Methods("GET")
-	frontend.Handle("/verify/{secret}", router.verify()).Methods("POST")
-	frontend.Handle("/styles.css", router.styles()).Methods("GET")
-	frontend.Handle("/favicon.png", router.favicon()).Methods("GET")
-	frontend.Handle("/legal", router.legal()).Methods("GET")
-	frontend.Handle("/login", router.loginWithCode()).Methods("POST").Queries("method", "code")
-	frontend.Handle("/login", router.login()).Methods("GET")
-	frontend.Handle("/login", router.loginForm()).Methods("POST")
-	frontend.Handle("/logout", router.logout()).Methods("POST")
+
+	// setup talk routes
+	talksHandler := &handlers.Talks{Context: router.baseCtx, Storage: router.storage}
+	talksHandler.Setup(frontend)
+
+	// setup user session routes
+	userHandler := &handlers.User{Context: router.baseCtx, Auth: router.auth, Session: router.session}
+	userHandler.Setup(frontend)
+
+	// setup static routes
+	staticHandler := &handlers.Static{Context: router.baseCtx}
+	staticHandler.Setup(frontend)
 
 	// setup api routes
 	apiHandler := &handlers.API{Storage: router.storage}
 	apiHandler.Setup(router.mux.PathPrefix("/api").Subrouter())
 
-	// parse templates
-	router.templates = make(map[string]*template.Template)
-	for _, t := range []string{"templates/categories.html", "templates/submit.html", "templates/top.html", "templates/confirm.html", "templates/legal.html", "templates/talk.html", "templates/login.html", "templates/login-code.html", "templates/edit.html", "templates/filter.html"} {
-		router.templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(templateFuncs).ParseFS(webTemplates, "templates/base.html", t))
-	}
 }
 
-func (router *Router) submit() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ac := router.baseCtx(w, r)
-		if !ac.Authenticated() {
-			// Redirect to login form
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-		context := struct {
-			baseCtx
-			Categories []string
-		}{ac, talkCategories}
-
-		if err := router.templates["submit.html"].Execute(w, &context); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-		}
-	})
-}
-
-var titleRegex = regexp.MustCompile(`^[\d\s\w?!:,\-()]{10,128}$`)
-
-func validateTitle(proposed string) bool {
-	if !titleRegex.MatchString(proposed) {
-		return false
-	}
-	// A title should consist at least 50% of letters
-	count := 0
-	for _, r := range proposed {
-		if unicode.IsLetter(r) {
-			count++
-		}
-	}
-	return count > len(proposed)/2
-}
-
-var linkSchemeRegex = regexp.MustCompile(`^http(s)?$`)
-
-const bodyCharLimit = 10000
-const genericErrorMessage = "Something has gone awry. Please try again."
-const localTimeFormat = "2006-01-02T15:04"
-
-func (router *Router) confirm() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ac := router.baseCtx(w, r)
-		if err := router.templates["confirm.html"].Execute(w, &struct {
-			baseCtx
-			Talk bool
-		}{ac, true}); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) verify() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		secret := mux.Vars(r)["secret"]
-		if err := router.storage.Verify(secret); err != nil {
-			http.Error(w, "could not verify talk", http.StatusConflict)
-			return
-		}
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
-}
-
-func (router *Router) styles() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/css")
-		w.Write(tailwindStyles)
-	})
-}
-
-func (router *Router) favicon() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		w.Write(favicon)
-	})
-}
-
-func (router *Router) legal() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := router.templates["legal.html"].Execute(w, router.baseCtx(w, r)); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) login() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if session is already valid, then redirect back to home page
-		ac := router.baseCtx(w, r)
-		if ac.Authenticated() {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
-		ctx := struct {
-			baseCtx
-			Error string
-		}{
-			baseCtx: ac,
-		}
-		// Else show login form
-		if err := router.templates["login.html"].Execute(w, &ctx); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) edit() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idstr := mux.Vars(r)["id"]
-		id, err := strconv.ParseInt(idstr, 10, 64)
-		if err != nil {
-			http.Error(w, "bad id format", http.StatusBadRequest)
-			return
-		}
-		ac := router.baseCtx(w, r)
-		if !ac.Authenticated() {
-			http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
-			return
-		}
-		// Get post with given ID
-		talk, err := router.storage.Talk(id)
-		if talk == nil || err != nil {
-			http.Error(w, "could not find talk", http.StatusNotFound)
-			return
-		}
-		if talk.User != ac.Login {
-			http.Error(w, "not the author of the talk", http.StatusForbidden)
-			return
-		}
-		// Context should already
-		ctx := struct {
-			baseCtx
-			Talk       *structs.Talk
-			Categories []string
-		}{
-			baseCtx:    ac,
-			Talk:       talk,
-			Categories: talkCategories,
-		}
-		if err := router.templates["edit.html"].Execute(w, &ctx); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) editForm() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idstr := mux.Vars(r)["id"]
-		id, err := strconv.ParseInt(idstr, 10, 64)
-		if err != nil {
-			http.Error(w, "bad id format", http.StatusBadRequest)
-			return
-		}
-		ac := router.baseCtx(w, r)
-		if !ac.Authenticated() {
-			http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
-			return
-		}
-		// Get post with given ID
-		talk, err := router.storage.Talk(id)
-		if talk == nil || err != nil {
-			http.Error(w, "could not find talk", http.StatusNotFound)
-			return
-		}
-		if talk.User != ac.Login {
-			http.Error(w, "not the author of the talk", http.StatusForbidden)
-			return
-		}
-		// Set up basic error helper
-		showError := func(errorMsg string, status int) {
-			// Else show login form
-			w.WriteHeader(status)
-			ctx := struct {
-				baseCtx
-				Talk       *structs.Talk
-				Categories []string
-			}{
-				baseCtx:    ac,
-				Talk:       talk,
-				Categories: talkCategories,
-			}
-			ctx.Error = errorMsg
-			if err := router.templates["edit.html"].Execute(w, &ctx); err != nil {
-				logrus.WithError(err).Error("Failed to execute template")
-				return
-			}
-		}
-		// Parse form data
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form data", http.StatusBadRequest)
-			return
-		}
-		// If we want to delete the post, thats easy!
-		if delete := r.Form.Get("delete"); delete != "" {
-			if err := router.storage.DeleteTalk(id); err != nil {
-				showError("Failed to delete talk. Please try again later.", http.StatusInternalServerError)
-				logrus.WithError(err).Error("Failed to delete talk")
-				return
-			}
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
-		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
-		title := strings.TrimSpace(r.Form.Get("title"))
-		if !validateTitle(title) {
-			showError("Your title is invalid. It should match "+titleRegex.String()+`.`, http.StatusBadRequest)
-			return
-		}
-		talk.Title = title
-
-		// Make sure that we don't go over the character limit
-		body := r.Form.Get("body")
-		if len(body) > bodyCharLimit {
-			showError("Your details body is too long. It should be no longer than 10000 characters.", http.StatusBadRequest)
-			return
-		}
-		talk.Body = body
-
-		// Verify that either link is valid URL and has http scheme
-		link := r.Form.Get("url")
-		parsedLink, err := url.Parse(link)
-		if link != "" && err != nil {
-			showError("Your link does not seem to be a valid URL.", http.StatusBadRequest)
-			return
-		} else if link != "" && !linkSchemeRegex.MatchString(parsedLink.Scheme) {
-			showError("The talk links schema must be http:// or https://.", http.StatusBadRequest)
-			return
-		}
-		talk.Link = link
-
-		// Verify that category is in categories list
-		category := r.Form.Get("category")
-		categoryExists := false
-		for i := range talkCategories {
-			if talkCategories[i] == category {
-				categoryExists = true
-				break
-			}
-		}
-		if !categoryExists {
-			showError("The selected category does not exist.", http.StatusBadRequest)
-			return
-		}
-		talk.Category = category
-
-		// Verify that date is in the future
-		location, _ := time.LoadLocation("Europe/Berlin")
-		date, err := time.ParseInLocation(localTimeFormat, r.Form.Get("date"), location)
-		if err != nil {
-			showError("The selected date is in a non-parseable format.", http.StatusBadRequest)
-			return
-		}
-		if time.Since(date) >= 0 {
-			showError("The selected date has to be in the future.", http.StatusBadRequest)
-			return
-		}
-		talk.Date = date
-		// Update talk data
-		if err := router.storage.UpdateTalk(talk); err != nil {
-			showError(genericErrorMessage, http.StatusInternalServerError)
-			logrus.WithError(err).Error("Failed to update talk")
-			return
-		}
-		// Redirect to talk page
-		http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
-	})
-}
-
-func (router *Router) loginForm() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if session is already valid, then redirect back to home page
-		ac := router.baseCtx(w, r)
-		if ac.Authenticated() {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
-		showError := func(errorMsg string, status int) {
-			ac.Error = errorMsg
-			// Else show login form
-			w.WriteHeader(status)
-			if err := router.templates["login.html"].Execute(w, &ac); err != nil {
-				logrus.WithError(err).Error("Failed to execute template")
-				return
-			}
-		}
-		// Parse form data
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "could not parse form", http.StatusBadRequest)
-			return
-		}
-		// Else validate input
-		user := r.Form.Get("uid")
-		login, err := router.auth.Login(user)
-		if errors.Is(err, structs.ErrInvalidInput) {
-			showError("Please check your username.", http.StatusBadRequest)
-			return
-		} else if loginErr := (structs.TooManyLoginsError{}); errors.As(err, &loginErr) {
-			showError(fmt.Sprintf("Too many login attempts. Please try again in %d seconds.", loginErr.Timeout), http.StatusTooManyRequests)
-			return
-		} else if err != nil {
-			showError(genericErrorMessage, http.StatusInternalServerError)
-			return
-		}
-		// Render confirm site
-		ctx := struct {
-			baseCtx
-			Key string
-		}{
-			baseCtx: ac,
-			Key:     login.Key,
-		}
-		if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-var loginKeyRegex = regexp.MustCompile(`^[a-f0-9]{64}$`)
-var loginCodeRegex = regexp.MustCompile(`^[0-9]{6}$`)
-
-func (router *Router) loginWithCode() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if session is already valid, then redirect back to home page
-		ac := router.baseCtx(w, r)
-		if ac.Authenticated() {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-		}
-		// Get login key and code
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "could not parse form", http.StatusBadRequest)
-			return
-		}
-		// Verify key and code
-		key := r.Form.Get("key")
-		showError := func(errorMsg string) {
-			// Show form again
-			ctx := struct {
-				baseCtx
-				Key string
-			}{
-				baseCtx: ac,
-				Key:     key,
-			}
-			ctx.Error = errorMsg
-			if err := router.templates["login-code.html"].Execute(w, &ctx); err != nil {
-				logrus.WithError(err).Error("Failed to execute template")
-				return
-			}
-		}
-		if !loginKeyRegex.MatchString(key) {
-			showError("Your login key is invalid. Please try again.")
-			return
-		}
-		code := r.Form.Get("code")
-		if !loginCodeRegex.MatchString(code) {
-			showError("Your code is in the wrong format. Please try again.")
-			return
-		}
-		// Retrieve login attempt with key
-		session, err := router.auth.LoginWithCode(key, code)
-		if errors.Is(err, structs.ErrLoginInvalidKey) {
-			// Redirect to login form
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		} else if wrongCodeErr := (structs.WrongCodeError{}); errors.As(err, &wrongCodeErr) {
-			errorMsg := fmt.Sprintf("The code you entered is wrong (attempt %d of %d).", wrongCodeErr.Attempt, wrongCodeErr.MaxAttempts)
-			showError(errorMsg)
-			return
-		} else if err != nil {
-			logrus.WithError(err).Warn("Failed to confirm login")
-			showError(genericErrorMessage)
-			return
-		}
-		// Set session cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:     "session",
-			Value:    session.Key,
-			Expires:  session.Expiration,
-			Secure:   router.httpsOnly,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		})
-		// Redirect to home site
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
-}
-
-func (router *Router) logout() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if session is valid, else redirect to homepage
-		ac := router.baseCtx(w, r)
-		if !ac.Authenticated() {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
-		// Drop cookie in user session
-		dropSessionCookie(w)
-		// Delete session from store
-		if err := router.storage.DeleteSession(ac.SessionKey); err != nil {
-			http.Error(w, "could not drop session", http.StatusInternalServerError)
-			return
-		}
-		// Redirect to home page
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
-}
-
-const sessionCookie = "session"
-
-type baseCtx struct {
-	Build      string
-	Error      string
-	Login      string
-	SessionKey string
-	CSRFToken  template.HTML
-}
-
-func (a *baseCtx) Authenticated() bool {
-	return a.Login != ""
-}
-
-func dropSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:   sessionCookie,
-		MaxAge: -1,
-	})
-}
-
-func (router *Router) baseCtx(w http.ResponseWriter, r *http.Request) baseCtx {
-	ctx := baseCtx{Build: buildID, CSRFToken: csrf.TemplateField(r)}
+func (router *Router) baseCtx(w http.ResponseWriter, r *http.Request) templates.Context {
+	ctx := templates.Context{Build: buildID, CSRFToken: csrf.TemplateField(r)}
 	// Get request session cookie
-	cookie, err := r.Cookie(sessionCookie)
-	if err == http.ErrNoCookie {
-		return ctx
-	}
-	// Get session key from cookie
-	key := cookie.Value
-	// Make sure that key is valid session key
-	if !loginKeyRegex.MatchString(key) {
-		dropSessionCookie(w)
-		return ctx
-	}
-	user, err := router.storage.VerifySession(key)
-	if err != nil {
-		// Delete session cookie
-		dropSessionCookie(w)
+	user, key, ok := router.session.Validate(w, r)
+	if !ok {
 		return ctx
 	}
 	ctx.Login = user
 	ctx.SessionKey = key
 	return ctx
-}
-
-func (router *Router) downloadTalk() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
-		if err != nil {
-			http.Error(w, "invalid talk id", http.StatusBadRequest)
-			return
-		}
-		talk, err := router.storage.Talk(id)
-		if talk == nil || err != nil {
-			http.Error(w, "could not fetch talk", http.StatusInternalServerError)
-			logrus.WithError(err).Error("Failed to fetch talk")
-			return
-		} else if talk == nil {
-			http.Error(w, "talk not found", http.StatusNotFound)
-			return
-		}
-		// Encode talk as ICS
-		cal := ics.NewCalendar()
-		cal.SetMethod(ics.MethodRequest)
-		event := cal.AddEvent(fmt.Sprintf("%d@tum.events", id))
-		event.SetCreatedTime(time.Now())
-		event.SetStartAt(talk.Date)
-		event.SetEndAt(talk.Date.Add(time.Hour))
-		event.SetSummary(talk.Title)
-		event.SetDescription(talk.Body)
-		event.SetURL(talk.Link)
-
-		// Write out as download
-		contentDisposition := fmt.Sprintf("attachment; filename=\"tumevent%d.ics\"", talk.ID)
-		w.Header().Set("Content-Disposition", contentDisposition)
-		cal.SerializeTo(w)
-	})
-}
-
-func (router *Router) talk() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
-		if err != nil {
-			http.Error(w, "invalid talk id", http.StatusBadRequest)
-			return
-		}
-		talk, err := router.storage.Talk(id)
-		if talk == nil || err != nil {
-			http.Error(w, "could not fetch talk", http.StatusInternalServerError)
-			logrus.WithError(err).Error("Failed to fetch talk")
-			return
-		} else if talk == nil {
-			http.Error(w, "talk not found", http.StatusNotFound)
-			return
-		}
-		type ctxTalk struct {
-			ID       int64
-			Title    string
-			Date     time.Time
-			Category string
-			Body     template.HTML
-			Link     string
-			User     string
-		}
-		ctx := struct {
-			baseCtx
-			Talk ctxTalk
-		}{
-			router.baseCtx(w, r),
-			ctxTalk{
-				ID:       talk.ID,
-				Title:    talk.Title,
-				Date:     talk.Date,
-				Category: talk.Category,
-				Link:     talk.Link,
-				Body:     template.HTML(talk.RenderAsHTML()),
-				User:     talk.User,
-			},
-		}
-		if err := router.templates["talk.html"].Execute(w, &ctx); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) submitForm() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ac := router.baseCtx(w, r)
-		// Parse form data
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "could not parse form", http.StatusBadRequest)
-			return
-		}
-		if !ac.Authenticated() {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-		// Verify items one by one
-		user := ac.Login
-		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
-		title := strings.TrimSpace(r.Form.Get("title"))
-		if !validateTitle(title) {
-			http.Error(w, "title not valid", http.StatusBadRequest)
-			return
-		}
-		body := r.Form.Get("body")
-		// Make sure that we don't go over the character limit
-		if len(body) > bodyCharLimit {
-			http.Error(w, "body has more than 10000 characters", http.StatusBadRequest)
-			return
-		}
-		// Verify that either link is valid URL and has http scheme
-		link := r.Form.Get("url")
-		parsedLink, err := url.Parse(link)
-		if link != "" && err != nil {
-			http.Error(w, "link not valid", http.StatusBadRequest)
-			return
-		} else if link != "" && !linkSchemeRegex.MatchString(parsedLink.Scheme) {
-			http.Error(w, "link must be http or https", http.StatusBadRequest)
-			return
-		}
-		// Verify that category is in categories list
-		category := r.Form.Get("category")
-		categoryExists := false
-		for i := range talkCategories {
-			if talkCategories[i] == category {
-				categoryExists = true
-				break
-			}
-		}
-		if !categoryExists {
-			http.Error(w, "category does not exist", http.StatusBadRequest)
-			return
-		}
-		// Verify that date is in the future
-		location, _ := time.LoadLocation("Europe/Berlin")
-		date, err := time.ParseInLocation(localTimeFormat, r.Form.Get("date"), location)
-		if err != nil {
-			http.Error(w, "could not parse datetime", http.StatusBadRequest)
-			return
-		}
-		if time.Since(date) >= 0 {
-			http.Error(w, "date has to be in the future", http.StatusBadRequest)
-			return
-		}
-		// If user is authenticated, directly insert talk and redirect
-		talk := &structs.Talk{
-			User:     user,
-			Title:    title,
-			Category: category,
-			Date:     date,
-			Link:     link,
-			Body:     body,
-		}
-		if err := router.storage.InsertTalk(talk); err != nil {
-			logrus.WithError(err).Error("Failed to insert talk")
-			http.Error(w, "inserting talk failed", http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
-}
-
-func (router *Router) top() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		talks, err := router.storage.UpcomingTalks()
-		if err != nil {
-			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
-			return
-		}
-		sort.Slice(talks, func(i, j int) bool { return talks[i].Rank < talks[j].Rank })
-
-		context := struct {
-			baseCtx
-			Talks []*structs.Talk
-		}{
-			router.baseCtx(w, r),
-			talks,
-		}
-		if err := router.templates["top.html"].Execute(w, &context); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) nextup() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get talks sorted by date
-		talks, err := router.storage.UpcomingTalks()
-		if err != nil {
-			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
-			return
-		}
-		sort.Slice(talks, func(i, j int) bool { return talks[i].Date.Before(talks[j].Date) })
-
-		// Put into top context
-		context := struct {
-			baseCtx
-			Talks []*structs.Talk
-		}{
-			router.baseCtx(w, r),
-			talks,
-		}
-		if err := router.templates["top.html"].Execute(w, &context); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) categories() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Put into top context
-		context := struct {
-			baseCtx
-			Category   bool
-			Categories []string
-		}{
-			router.baseCtx(w, r),
-			false,
-			talkCategories,
-		}
-		if err := router.templates["categories.html"].Execute(w, &context); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func (router *Router) filter() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get category or site filter
-		query := r.URL.Query()
-		site := query.Get("site")
-		category := query.Get("category")
-		filters := make([]func(t *structs.Talk) bool, 0, 2)
-		// Check that category is in 'valid' categories
-		if category != "" {
-			found := false
-			for _, c := range talkCategories {
-				if c == category {
-					found = true
-				}
-			}
-			if !found {
-				http.Error(w, "category not found", http.StatusNotFound)
-				return
-			}
-			filters = append(filters, func(t *structs.Talk) bool {
-				return t.Category == category
-			})
-		}
-		// Add site filter
-		if site != "" {
-			filters = append(filters, func(t *structs.Talk) bool {
-				return t.LinkDomain == site
-			})
-		}
-		// Put into top context
-		talks, err := router.storage.UpcomingTalks()
-		if err != nil {
-			http.Error(w, "could not retrieve talks", http.StatusInternalServerError)
-			return
-		}
-		// Filter talks
-		j := 0
-		for i := range talks {
-			match := true
-			for j := range filters {
-				if !filters[j](talks[i]) {
-					match = false
-					break
-				}
-			}
-			if match {
-				talks[j] = talks[i]
-				j++
-			}
-		}
-		talks = talks[:j]
-		// Sort by date
-		sort.Slice(talks, func(i, j int) bool { return talks[i].Date.Before(talks[j].Date) })
-
-		context := struct {
-			baseCtx
-			Category   string
-			LinkDomain string
-			Talks      []*structs.Talk
-		}{
-			baseCtx:    router.baseCtx(w, r),
-			Category:   category,
-			LinkDomain: site,
-			Talks:      talks,
-		}
-		if err := router.templates["filter.html"].Execute(w, &context); err != nil {
-			logrus.WithError(err).Error("Failed to execute template")
-			return
-		}
-	})
-}
-
-func NewRouter(publicURL *url.URL, storage *structs.Storage, auth auth.Auth, httpsOnly, publicDomainOnly bool, middleware ...mux.MiddlewareFunc) *Router {
-	return &Router{
-		mux:              mux.NewRouter(),
-		publicURL:        publicURL,
-		storage:          storage,
-		httpsOnly:        httpsOnly,
-		publicDomainOnly: publicDomainOnly,
-		auth:             auth,
-		middleware:       middleware,
-	}
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -22,6 +22,32 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+var TalkCategories = []string{
+	"software-engineering",
+	"distributed-systems",
+	"programming-languages",
+	"databases",
+	"scientific-computing",
+	"robotics",
+	"artificial-intelligence",
+	"automata-theory",
+	"computer-networks",
+	"computer-vision",
+	"computer-architecture",
+	"bioinformatics",
+	"operating-systems",
+	"data-structures",
+	"computer-graphics",
+	"medicine",
+	"computer-security",
+	"logic",
+	"data-analytics",
+	"machine-learning",
+	"formal-methods",
+	"master-thesis",
+	"bachelor-thesis",
+}
+
 const LoginMaxAttempts = 3
 
 type Login struct {
