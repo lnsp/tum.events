@@ -28,6 +28,38 @@ type Store interface {
 	List(prefix string) ([]string, []byte, error)
 }
 
+func RestoreFromDump(kv Store, reader io.Reader) error {
+	kvs := map[string]string{}
+	if err := json.NewDecoder(reader).Decode(&kvs); err != nil {
+		return err
+	}
+	for key, value := range kvs {
+		if err := kv.Put(key, []byte(value)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func WriteToDump(kv Store, writer io.Writer) error {
+	keys, _, err := kv.List("")
+	if err != nil {
+		return err
+	}
+	kvs := map[string]string{}
+	for _, key := range keys {
+		value, err := kv.Fetch(key)
+		if err != nil {
+			return err
+		}
+		kvs[key] = string(value)
+	}
+	if err := json.NewEncoder(writer).Encode(kvs); err != nil {
+		return err
+	}
+	return nil
+}
+
 var _ Store = (*inMemoryStore)(nil)
 
 type inMemoryStore struct {

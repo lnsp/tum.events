@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -39,6 +38,7 @@ func main() {
 	// Parse environment variables
 	envspec := struct {
 		Debug            bool   `envconfig:"DEBUG"`
+		DebugDump        string `envconfig:"DEBUG_DUMP"`
 		MailSender       string `envconfig:"MAIL_SENDER"`
 		MailDomain       string `envconfig:"MAIL_DOMAIN"`
 		MailAPIKey       string `envconfig:"MAIL_APIKEY"`
@@ -71,6 +71,11 @@ func main() {
 			Token:   envspec.ValarToken,
 			Project: envspec.ValarProject,
 		})
+	}
+	if envspec.DebugDump != "" {
+		f, _ := os.Open(envspec.DebugDump)
+		kv.RestoreFromDump(kvBackend, f)
+		f.Close()
 	}
 
 	storage := structs.NewStorage(kvBackend, os.Getenv("VALAR_PREFIX"))
@@ -123,39 +128,19 @@ type Router struct {
 	middleware       []mux.MiddlewareFunc
 }
 
-func (router *Router) setupDebugRoutes(kv kv.Store) {
+func (router *Router) setupDebugRoutes(kvstore kv.Store) {
 	router.mux.HandleFunc("/debug/dump", func(wr http.ResponseWriter, req *http.Request) {
 		switch req.Method {
 		case http.MethodGet:
-			keys, _, err := kv.List("")
-			if err != nil {
-				http.Error(wr, err.Error(), http.StatusInternalServerError)
+			if err := kv.WriteToDump(kvstore, wr); err != nil {
+				logrus.WithError(err).Error("could not write to dump")
 				return
 			}
-			kvs := map[string]string{}
-			for _, key := range keys {
-				value, err := kv.Fetch(key)
-				if err != nil {
-					http.Error(wr, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				kvs[key] = string(value)
-			}
-			if err := json.NewEncoder(wr).Encode(kvs); err != nil {
-				http.Error(wr, err.Error(), http.StatusInternalServerError)
-				return
-			}
+			wr.WriteHeader(http.StatusOK)
 		case http.MethodPost:
-			kvs := map[string]string{}
-			if err := json.NewDecoder(req.Body).Decode(&kvs); err != nil {
-				http.Error(wr, err.Error(), http.StatusInternalServerError)
+			if err := kv.RestoreFromDump(kvstore, req.Body); err != nil {
+				logrus.WithError(err).Error("could not restore from dump")
 				return
-			}
-			for key, value := range kvs {
-				if err := kv.Put(key, []byte(value)); err != nil {
-					http.Error(wr, err.Error(), http.StatusInternalServerError)
-					return
-				}
 			}
 			wr.WriteHeader(http.StatusOK)
 		}
