@@ -46,6 +46,7 @@ var TalkCategories = []string{
 	"formal-methods",
 	"master-thesis",
 	"bachelor-thesis",
+	"others",
 }
 
 const LoginMaxAttempts = 3
