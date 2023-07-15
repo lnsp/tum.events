@@ -1,0 +1,14 @@
+## Scripts
+
+This directory contains a number of scripts useful while working on the service.
+
+## Load testing
+
+To run the included load testing scripts, use the [k6](https://k6.io) load testing tool.
+
+```
+# simulate a single user
+k6 run --vus 1 --duration 30s load-test.js
+# simulate 50 concurrent users
+k6 run --vus 50 --duration 30s load-test.js
+```
