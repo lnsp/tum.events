@@ -403,13 +403,18 @@ func (storage *Storage) Verify(secret string) error {
 	return storage.InsertTalk(verif.Talk)
 }
 
-func (storage *Storage) DeleteTalk(id int64) error {
-	if id == 0 {
-		return fmt.Errorf("talk id required")
+func (storage *Storage) DeleteTalk(ids ...int64) error {
+	for _, id := range ids {
+		talkkey := fmt.Sprintf("%s_talks_%d", storage.prefix, id)
+		if err := storage.kv.Delete(talkkey); err != nil {
+			return fmt.Errorf("delete talk: %w", err)
+		}
 	}
-	talkkey := fmt.Sprintf("%s_talks_%d", storage.prefix, id)
-	if err := storage.kv.Delete(talkkey); err != nil {
-		return fmt.Errorf("delete talk: %w", err)
+
+	// Build ID set for quick lookup later on.
+	idset := map[int64]struct{}{}
+	for _, id := range ids {
+		idset[id] = struct{}{}
 	}
 
 	// Clear cache
@@ -418,14 +423,18 @@ func (storage *Storage) DeleteTalk(id int64) error {
 
 	// Clear hash, drop talk from cache
 	storage.hash = nil
-	delete(storage.cachemap, id)
-	for i, j := 0, 0; i < len(storage.cache); i++ {
-		if storage.cache[i].ID != id {
+
+	for id := range idset {
+		delete(storage.cachemap, id)
+	}
+	i, j := 0, 0
+	for ; i < len(storage.cache); i++ {
+		if _, ok := idset[storage.cache[i].ID]; !ok {
 			storage.cache[j] = storage.cache[i]
 			j++
 		}
 	}
-	storage.cache = storage.cache[:len(storage.cache)-1]
+	storage.cache = storage.cache[:j]
 	return nil
 }
 
