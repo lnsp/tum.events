@@ -16,6 +16,7 @@ type User struct {
 	Context templates.ContextFunc
 	Auth    auth.Auth
 	Session *auth.Session
+	Storage *structs.Storage
 }
 
 const genericErrorMessage = "Something has gone awry. Please try again."
@@ -25,6 +26,8 @@ func (h User) Setup(router *mux.Router) {
 	router.Handle("/login", h.login()).Methods("GET")
 	router.Handle("/login", h.loginForm()).Methods("POST")
 	router.Handle("/logout", h.logout()).Methods("POST")
+	router.Handle("/profile", h.profile()).Methods("GET")
+	router.Handle("/profile", h.profileForm()).Methods("POST")
 }
 
 func (h User) login() http.Handler {
@@ -170,5 +173,65 @@ func (h User) loginForm() http.Handler {
 			logrus.WithError(err).Error("Failed to execute template")
 			return
 		}
+	})
+}
+
+func (h User) profile() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ac := h.Context(w, r)
+		if !ac.Authenticated() {
+			// Redirect to login form
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if err := templates.Execute("profile.html", w, h.Context(w, r)); err != nil {
+			logrus.WithError(err).Error("Failed to execute template")
+			return
+		}
+	})
+}
+
+func (h User) profileForm() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ac := h.Context(w, r)
+		if !ac.Authenticated() {
+			// Redirect to login form
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		showError := func(errorMsg string, status int) {
+			w.WriteHeader(status)
+			ctx := struct {
+				templates.Context
+			}{
+				Context: ac,
+			}
+			ctx.Error = errorMsg
+			if err := templates.Execute("profile.html", w, &ctx); err != nil {
+				logrus.WithError(err).Error("Failed to execute template")
+				return
+			}
+		}
+		delete := r.Form.Get("delete") != ""
+		if !delete {
+			http.Redirect(w, r, "/profile", http.StatusSeeOther)
+			return
+		}
+		talks, err := h.Storage.Talks()
+		if err != nil {
+			showError(genericErrorMessage, http.StatusInternalServerError)
+			logrus.WithError(err).Error("Failed to retrieve talks")
+			return
+		}
+		tids := []int64{}
+		for _, t := range talks {
+			tids = append(tids, t.ID)
+		}
+		if err := h.Storage.DeleteTalk(tids...); err != nil {
+			showError(genericErrorMessage, http.StatusInternalServerError)
+			logrus.WithError(err).Error("Failed to delete talks")
+			return
+		}
+		showError("All your events have been deleted.", http.StatusOK)
 	})
 }

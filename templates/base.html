@@ -33,7 +33,7 @@
       </div>
       <div class="flex gap-1 whitespace-nowrap text-xs flex-wrap sm:text-base items-center">
         {{ if .Login }}
-        <span>{{ .Login }}</span>
+        <a href="/profile">{{ .Login }}</a>
         <span>|</span>
         <form action="/logout" method="POST">
           {{ .CSRFToken }}

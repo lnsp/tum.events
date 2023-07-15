@@ -5,15 +5,14 @@
   {{ with .Error }}
   <div class="mb-3 text-gray-600 flex gap-2 items-center"><span class="flex items-center justify-center w-6 h-6 bg-gray-600 text-white font-bold">!</span>{{ . }}</div>
   {{ end }}
-  <div class="mb-3">To verify your identity, please enter your TUM identifier. You will receive an email with a login code afterwards.</div>
-  <div class="flex gap-2 border-gray-300">
-    <label for="uid">TUM User ID</label>
-    <div class="flex-grow">
-      <input name="uid" type="text" class="rounded border border-black w-full max-w-xs" placeholder="go42tum" required>
+  <div class="grid grid-cols-12 gap-2">
+    <label for="delete" class="col-span-2">delete all events?</label>
+    <div class="col-span-10">
+      <input type="checkbox" name="delete">
     </div>
-  </div>
-  <div class="mt-3">
-    <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">login</button>
+    <div class="col-span-full">
+      <button role="submit" class="px-2 rounded border border-black bg-gray-200 font-mono">submit</button>
+    </div>
   </div>
 </form>
 {{ end }}

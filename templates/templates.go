@@ -2,6 +2,7 @@ package templates
 
 import (
 	"embed"
+	"fmt"
 	"html/template"
 	"io"
 	"net/http"
@@ -36,13 +37,25 @@ var templateFuncs = template.FuncMap{
 var templates = map[string]*template.Template{}
 
 func init() {
-	for _, t := range []string{"categories.html", "submit.html", "top.html", "confirm.html", "legal.html", "talk.html", "login.html", "login-code.html", "edit.html", "filter.html"} {
+	for _, t := range []string{"categories.html", "submit.html", "top.html", "confirm.html", "legal.html", "talk.html", "login.html", "login-code.html", "edit.html", "filter.html", "profile.html"} {
 		templates[path.Base(t)] = template.Must(template.New("base.html").Funcs(templateFuncs).ParseFS(webTemplates, "base.html", t))
 	}
 }
 
+type ErrorNotFound struct {
+	Name string
+}
+
+func (err ErrorNotFound) Error() string {
+	return fmt.Sprintf("template '%s' not found", err.Name)
+}
+
 func Execute(name string, writer io.Writer, data any) error {
-	return templates[name].Execute(writer, data)
+	tmpl, ok := templates[name]
+	if !ok {
+		return ErrorNotFound{name}
+	}
+	return tmpl.Execute(writer, data)
 }
 
 type Context struct {

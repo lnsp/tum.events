@@ -159,7 +159,12 @@ func (router *Router) setup() {
 	talksHandler.Setup(frontend)
 
 	// setup user session routes
-	userHandler := &handlers.User{Context: router.baseCtx, Auth: router.auth, Session: router.session}
+	userHandler := &handlers.User{
+		Context: router.baseCtx,
+		Auth:    router.auth,
+		Session: router.session,
+		Storage: router.storage,
+	}
 	userHandler.Setup(frontend)
 
 	// setup static routes
