@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/csrf"
 	"github.com/gorilla/mux"
+	"github.com/kelseyhightower/envconfig"
 	"github.com/lnsp/tumtalks/auth"
 	"github.com/lnsp/tumtalks/handlers"
 	"github.com/lnsp/tumtalks/kv"
@@ -34,23 +35,41 @@ func main() {
 	logrus.SetFormatter(&logrus.TextFormatter{CallerPrettyfier: func(f *runtime.Frame) (string, string) {
 		return "", fmt.Sprintf("%s:%d", path.Base(f.File), f.Line)
 	}})
-	debugMode := os.Getenv("DEBUG") != ""
+
+	// Parse environment variables
+	envspec := struct {
+		Debug            bool   `envconfig:"DEBUG"`
+		MailSender       string `envconfig:"MAIL_SENDER"`
+		MailDomain       string `envconfig:"MAIL_DOMAIN"`
+		MailAPIKey       string `envconfig:"MAIL_APIKEY"`
+		MailUserDomain   string `envconfig:"MAIL_USERDOMAIN"`
+		ValarToken       string `envconfig:"VALAR_TOKEN"`
+		ValarProject     string `envconfig:"VALAR_PROJECT"`
+		ValarPrefix      string `envconfig:"VALAR_PREFIX"`
+		RouterHTTPSOnly  bool   `envconfig:"ROUTER_HTTPSONLY"`
+		RouterPublicURL  string `envconfig:"ROUTER_PUBLICURL"`
+		RouterDomainOnly bool   `envconfig:"ROUTER_DOMAINONLY"`
+		RouterCSRFKey    string `envconfig:"ROUTER_CSRFKEY"`
+	}{}
+	if err := envconfig.Process("", &envspec); err != nil {
+		logrus.WithError(err).Fatal("invalid envspec")
+	}
 
 	mailProvider := mail.Provider(&mail.DebugProvider{})
-	if !debugMode {
+	if !envspec.Debug {
 		mailProvider = mail.NewMailgunProvider(&mail.MailgunConfig{
-			Sender:       os.Getenv("MAIL_SENDER"),
-			SenderDomain: os.Getenv("MAIL_DOMAIN"),
-			APIKey:       os.Getenv("MAIL_APIKEY"),
-			UserDomain:   os.Getenv("MAIL_USERDOMAIN"),
+			Sender:       envspec.MailSender,
+			SenderDomain: envspec.MailDomain,
+			APIKey:       envspec.MailAPIKey,
+			UserDomain:   envspec.MailUserDomain,
 		})
 	}
 
 	kvBackend := kv.NewInMemoryStore()
-	if !debugMode {
+	if !envspec.Debug {
 		kvBackend = kv.NewRemoteStore(kv.Credentials{
-			Token:   os.Getenv("VALAR_TOKEN"),
-			Project: os.Getenv("VALAR_PROJECT"),
+			Token:   envspec.ValarToken,
+			Project: envspec.ValarProject,
 		})
 	}
 
@@ -61,27 +80,26 @@ func main() {
 	}
 	session := &auth.Session{
 		Storage:   storage,
-		HTTPSOnly: os.Getenv("ROUTER_HTTPSONLY") != "",
+		HTTPSOnly: envspec.RouterHTTPSOnly,
 	}
 
-	publicURL, err := url.Parse(os.Getenv("ROUTER_PUBLICURL"))
+	publicURL, err := url.Parse(envspec.RouterPublicURL)
 	if err != nil {
 		logrus.WithError(err).Fatal("public url is invalid")
 	}
-	publicDomainOnly := os.Getenv("ROUTER_DOMAINONLY") != ""
 	csrf := csrf.Protect(
-		[]byte(os.Getenv("ROUTER_CSRFKEY")), csrf.Secure(!debugMode))
+		[]byte(os.Getenv("ROUTER_CSRFKEY")), csrf.Secure(!envspec.Debug))
 	router := &Router{
 		mux:              mux.NewRouter(),
 		publicURL:        publicURL,
 		storage:          storage,
 		session:          session,
-		publicDomainOnly: publicDomainOnly,
+		publicDomainOnly: envspec.RouterDomainOnly,
 		auth:             authProvider,
 		middleware:       []mux.MiddlewareFunc{csrf},
 	}
 	router.setup()
-	if debugMode {
+	if envspec.Debug {
 		router.setupDebugRoutes(kvBackend)
 	}
 	server := &http.Server{
