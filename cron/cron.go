@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lnsp/tumtalks/kv"
-	"github.com/lnsp/tumtalks/structs"
+	"github.com/lnsp/tum.events/kv"
+	"github.com/lnsp/tum.events/structs"
 	"github.com/mmcdole/gofeed"
 )
 

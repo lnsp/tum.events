@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/lnsp/tumtalks/templates"
+	"github.com/lnsp/tum.events/templates"
 	"github.com/sirupsen/logrus"
 )
 

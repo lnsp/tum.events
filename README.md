@@ -1,4 +1,4 @@
-# TUM Events
+# TUM Events [![Go Reference](https://pkg.go.dev/badge/github.com/lnsp/tum.events.svg)](https://pkg.go.dev/github.com/lnsp/tum.events)
 
 This is the source repository for the TUM Events service available at [tum.events](https://tum.events). 
 

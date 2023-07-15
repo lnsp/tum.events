@@ -3,7 +3,7 @@ package auth
 import (
 	"net/http"
 
-	"github.com/lnsp/tumtalks/structs"
+	"github.com/lnsp/tum.events/structs"
 )
 
 const cookieName = "session"

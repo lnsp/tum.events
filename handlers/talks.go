@@ -14,8 +14,8 @@ import (
 
 	ics "github.com/arran4/golang-ical"
 	"github.com/gorilla/mux"
-	"github.com/lnsp/tumtalks/structs"
-	"github.com/lnsp/tumtalks/templates"
+	"github.com/lnsp/tum.events/structs"
+	"github.com/lnsp/tum.events/templates"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/exp/slices"
 )

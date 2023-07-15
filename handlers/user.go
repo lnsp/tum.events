@@ -6,9 +6,9 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/lnsp/tumtalks/auth"
-	"github.com/lnsp/tumtalks/structs"
-	"github.com/lnsp/tumtalks/templates"
+	"github.com/lnsp/tum.events/auth"
+	"github.com/lnsp/tum.events/structs"
+	"github.com/lnsp/tum.events/templates"
 	"github.com/sirupsen/logrus"
 )
 

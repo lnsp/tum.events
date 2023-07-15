@@ -3,8 +3,8 @@ package auth
 import (
 	"regexp"
 
-	"github.com/lnsp/tumtalks/mail"
-	"github.com/lnsp/tumtalks/structs"
+	"github.com/lnsp/tum.events/mail"
+	"github.com/lnsp/tum.events/structs"
 	"github.com/sirupsen/logrus"
 )
 

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lnsp/tumtalks/kv"
+	"github.com/lnsp/tum.events/kv"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/sirupsen/logrus"
 	"github.com/yuin/goldmark"

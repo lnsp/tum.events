@@ -1,4 +1,4 @@
-module github.com/lnsp/tumtalks
+module github.com/lnsp/tum.events
 
 go 1.18
 

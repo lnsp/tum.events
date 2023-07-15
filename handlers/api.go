@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/lnsp/tumtalks/structs"
+	"github.com/lnsp/tum.events/structs"
 	"github.com/sirupsen/logrus"
 )
 
