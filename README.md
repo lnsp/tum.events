@@ -81,7 +81,7 @@ type Verification struct {
 
 When developing locally, you most likely want to edit templates & run a local service instance.
 
-```
+```bash
 # To continously render the tailwind.min.css styles, run the following command.
 npx tailwindcss -i tailwind.css -m -w -o tailwind.min.css 
 # In a second terminal, run & restart the web service as you see fit.
