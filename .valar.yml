@@ -41,3 +41,12 @@ deployment:
         - key: ROUTER_DOMAINONLY
           value: "true"
           secret: false
+        - key: R2_ACCESS_KEY_ID
+          value: u7Wi3+stSg3G81i7vhia61I7gS5n6uc4JNIdKDWZVgRwglr9uc2QYbgESwL+WEjZCUhpsT/y8QxhfBkx
+          secret: true
+        - key: R2_SECRET_KEY
+          value: Z5ktCnsqn+ONAPphE5K6TkkYUjL4sWbO3fVhIeAjboP53YSoW6lmkCVLN3vJRq55fMrE2glF5Uj4j/T7s3H1TIfxDskl8jvOH1vws35UORjuDNUlK7jtZAQTEHs=
+          secret: true
+        - key: R2_ACCESS_URL
+          value: https://4a7f738012695cb6cb78d8be54b399f4.r2.cloudflarestorage.com/tumevents
+          secret: false
