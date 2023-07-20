@@ -19,6 +19,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
+	"golang.org/x/exp/slices"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -63,10 +64,22 @@ func (l *Login) Active() bool {
 	return time.Now().Before(l.Expiration) && l.Attempt <= LoginMaxAttempts
 }
 
+type Capability string
+
+const (
+	CapabilityAdmin        Capability = "admin"
+	CapabilityImageUploads Capability = "img-uploads"
+)
+
 type User struct {
-	ID     string   `json:"i"`
-	Editor []string `json:"e"`
-	Admin  bool     `json:"a"`
+	// The unique TUMonline identifier for this user.
+	ID           string       `json:"i"`
+	Capabilities []Capability `json:"c"`
+}
+
+// Returns true if the user has the specified capability.
+func (u *User) HasCapability(cap Capability) bool {
+	return slices.Contains(u.Capabilities, cap)
 }
 
 type Session struct {
