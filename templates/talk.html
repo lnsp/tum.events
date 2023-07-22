@@ -25,6 +25,15 @@
       </div>
     </div>
   </div>
-  <div class="mt-3 ml-9 sm:ml-10 flex text-gray-900 flex-col gap-2 talk-body">{{ .Talk.Body }}</div>
+  <div class="mt-3 ml-9 sm:ml-10 flex text-gray-900 flex-col gap-2 talk-body mr-3">
+    {{ if .Talk.ImageURL }}
+    <img src="{{ .Talk.ImageURL }}">
+    {{ end }}
+    {{ if .Talk.Body }}
+    <p>
+      {{ .Talk.Body }}
+    </p>
+    {{ end }}
+  </div>
 </div>
 {{ end }}

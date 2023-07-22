@@ -51,10 +51,15 @@ func (h Talks) submit() http.Handler {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
+		user, _ := h.Storage.User(ac.Login)
 		context := struct {
 			templates.Context
-			Categories []string
-		}{ac, structs.TalkCategories}
+			Categories  []string
+			ImageUpload bool
+		}{
+			Context:     ac,
+			Categories:  structs.TalkCategories,
+			ImageUpload: user.HasCapability(structs.CapabilityImageUploads)}
 
 		if err := templates.Execute("submit.html", w, &context); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
@@ -119,6 +124,7 @@ func (h Talks) edit() http.Handler {
 			http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
 			return
 		}
+		user, _ := h.Storage.User(ac.Login)
 		// Get post with given ID
 		talk, err := h.Storage.Talk(id)
 		if talk == nil || err != nil {
@@ -132,12 +138,14 @@ func (h Talks) edit() http.Handler {
 		// Context should already
 		ctx := struct {
 			templates.Context
-			Talk       *structs.Talk
-			Categories []string
+			Talk        *structs.Talk
+			Categories  []string
+			ImageUpload bool
 		}{
-			Context:    ac,
-			Talk:       talk,
-			Categories: structs.TalkCategories,
+			Context:     ac,
+			Talk:        talk,
+			Categories:  structs.TalkCategories,
+			ImageUpload: user.HasCapability(structs.CapabilityImageUploads),
 		}
 		if err := templates.Execute("edit.html", w, &ctx); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
@@ -159,6 +167,8 @@ func (h Talks) editForm() http.Handler {
 			http.Redirect(w, r, "/talk?id="+idstr, http.StatusSeeOther)
 			return
 		}
+		user, _ := h.Storage.User(ac.Login)
+		canUploadImage := user.HasCapability(structs.CapabilityImageUploads)
 		// Get post with given ID
 		talk, err := h.Storage.Talk(id)
 		if talk == nil || err != nil {
@@ -175,12 +185,14 @@ func (h Talks) editForm() http.Handler {
 			w.WriteHeader(status)
 			ctx := struct {
 				templates.Context
-				Talk       *structs.Talk
-				Categories []string
+				Talk        *structs.Talk
+				Categories  []string
+				UploadImage bool
 			}{
-				Context:    ac,
-				Talk:       talk,
-				Categories: structs.TalkCategories,
+				Context:     ac,
+				Talk:        talk,
+				Categories:  structs.TalkCategories,
+				UploadImage: canUploadImage,
 			}
 			ctx.Error = errorMsg
 			if err := templates.Execute("edit.html", w, &ctx); err != nil {
@@ -251,6 +263,19 @@ func (h Talks) editForm() http.Handler {
 			return
 		}
 		talk.Date = date
+		// If image has been set, we'll need to upload it. To simplify things, we'll just overwrite the old one.
+		image := talk.Image
+		imageBase64 := r.Form.Get("image")
+		if imageBase64 != "" && !user.HasCapability(structs.CapabilityImageUploads) {
+			showError("You're not allowed to upload images.", http.StatusUnauthorized)
+			return
+		} else if imageBase64 != "" {
+			if err := h.Storage.UploadImageWithName(image, imageBase64); err != nil {
+				showError(genericErrorMessage, http.StatusInternalServerError)
+				logrus.WithError(err).Error("Failed to upload image")
+				return
+			}
+		}
 		// Update talk data
 		if err := h.Storage.UpdateTalk(talk); err != nil {
 			showError(genericErrorMessage, http.StatusInternalServerError)
@@ -320,6 +345,7 @@ func (h Talks) talk() http.Handler {
 			Body     template.HTML
 			Link     string
 			User     string
+			ImageURL string
 		}
 		ctx := struct {
 			templates.Context
@@ -334,6 +360,7 @@ func (h Talks) talk() http.Handler {
 				Link:     talk.Link,
 				Body:     template.HTML(talk.RenderAsHTML()),
 				User:     talk.User,
+				ImageURL: talk.ImageURL,
 			},
 		}
 		if err := templates.Execute("talk.html", w, &ctx); err != nil {
@@ -355,59 +382,94 @@ func (h Talks) submitForm() http.Handler {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
-		// Verify items one by one
-		user := ac.Login
+		user, _ := h.Storage.User(ac.Login)
+		canUploadImage := user.HasCapability(structs.CapabilityImageUploads)
+
+		showError := func(errorMsg string, status int) {
+			// Else show login form
+			w.WriteHeader(status)
+			ctx := struct {
+				templates.Context
+				Categories  []string
+				ImageUpload bool
+			}{
+				Context:     ac,
+				ImageUpload: canUploadImage,
+				Categories:  structs.TalkCategories,
+			}
+			ctx.Error = errorMsg
+			if err := templates.Execute("submit.html", w, &ctx); err != nil {
+				logrus.WithError(err).Error("Failed to execute template")
+				return
+			}
+		}
 		// Title must at max contain 128 characters, and at least 10 non-whitespace ones
 		title := strings.TrimSpace(r.Form.Get("title"))
 		if !validateTitle(title) {
-			http.Error(w, "title not valid", http.StatusBadRequest)
+			showError("The title is not valid.", http.StatusBadRequest)
 			return
 		}
 		body := r.Form.Get("body")
 		// Make sure that we don't go over the character limit
 		if len(body) > bodyCharLimit {
-			http.Error(w, "body has more than 10000 characters", http.StatusBadRequest)
+			showError("The text body must have less than 10000 characters.", http.StatusBadRequest)
 			return
 		}
 		// Verify that either link is valid URL and has http scheme
 		link := r.Form.Get("url")
 		parsedLink, err := url.Parse(link)
 		if link != "" && err != nil {
-			http.Error(w, "link not valid", http.StatusBadRequest)
+			showError("The link is not valid.", http.StatusBadRequest)
 			return
 		} else if link != "" && !linkSchemeRegex.MatchString(parsedLink.Scheme) {
-			http.Error(w, "link must be http or https", http.StatusBadRequest)
+			showError("The link scheme must be http or https.", http.StatusBadRequest)
 			return
 		}
 		// Verify that category is in categories list
 		category := r.Form.Get("category")
 		if !slices.Contains(structs.TalkCategories, category) {
-			http.Error(w, "category does not exist", http.StatusBadRequest)
+			showError("The category does not exist.", http.StatusBadRequest)
 			return
 		}
 		// Verify that date is in the future
 		location, _ := time.LoadLocation("Europe/Berlin")
 		date, err := time.ParseInLocation(localTimeFormat, r.Form.Get("date"), location)
 		if err != nil {
-			http.Error(w, "could not parse datetime", http.StatusBadRequest)
+			showError("The given talk date is invalid.", http.StatusBadRequest)
 			return
 		}
 		if time.Since(date) >= 0 {
-			http.Error(w, "date has to be in the future", http.StatusBadRequest)
+			showError("The talk date has to be in the future.", http.StatusBadRequest)
 			return
+		}
+		// If image has been set, the user must have the capability to upload images.
+		image := ""
+		imageBase64 := r.Form.Get("image")
+		if imageBase64 != "" && !user.HasCapability(structs.CapabilityImageUploads) {
+			showError("You're not allowed to upload images.", http.StatusUnauthorized)
+			return
+		} else if imageBase64 != "" {
+			if key, err := h.Storage.UploadImage(imageBase64); err != nil {
+				showError(genericErrorMessage, http.StatusInternalServerError)
+				logrus.WithError(err).Error("Failed to upload image")
+				return
+			} else {
+				image = key
+			}
 		}
 		// If user is authenticated, directly insert talk and redirect
 		talk := &structs.Talk{
-			User:     user,
+			User:     ac.Login,
 			Title:    title,
 			Category: category,
 			Date:     date,
 			Link:     link,
 			Body:     body,
+			Image:    image,
 		}
 		if err := h.Storage.InsertTalk(talk); err != nil {
+			showError(genericErrorMessage, http.StatusInternalServerError)
 			logrus.WithError(err).Error("Failed to insert talk")
-			http.Error(w, "inserting talk failed", http.StatusInternalServerError)
 			return
 		}
 		http.Redirect(w, r, "/", http.StatusSeeOther)

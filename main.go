@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/lnsp/tum.events/auth"
+	"github.com/lnsp/tum.events/blob"
 	"github.com/lnsp/tum.events/handlers"
 	"github.com/lnsp/tum.events/kv"
 	"github.com/lnsp/tum.events/mail"
@@ -50,6 +51,10 @@ func main() {
 		RouterPublicURL  string `envconfig:"ROUTER_PUBLICURL"`
 		RouterDomainOnly bool   `envconfig:"ROUTER_DOMAINONLY"`
 		RouterCSRFKey    string `envconfig:"ROUTER_CSRFKEY"`
+		R2AccessKeyID    string `envconfig:"R2_ACCESS_KEY_ID"`
+		R2SecretKey      string `envconfig:"R2_SECRET_KEY"`
+		R2AccessURL      string `envconfig:"R2_ACCESS_URL"`
+		R2PublicURL      string `envconfig:"R2_PUBLIC_URL"`
 	}{}
 	if err := envconfig.Process("", &envspec); err != nil {
 		logrus.WithError(err).Fatal("invalid envspec")
@@ -77,8 +82,16 @@ func main() {
 		kv.RestoreFromDump(kvBackend, f)
 		f.Close()
 	}
+	blobBackend, err := blob.WithR2Backend(
+		envspec.R2AccessURL,
+		envspec.R2AccessKeyID,
+		envspec.R2SecretKey,
+		envspec.R2PublicURL)
+	if err != nil {
+		logrus.WithError(err).Fatal("setup blob storage")
+	}
 
-	storage := structs.NewStorage(kvBackend, os.Getenv("VALAR_PREFIX"))
+	storage := structs.NewStorage(kvBackend, blobBackend, envspec.ValarPrefix)
 	authProvider := &auth.MailBasedAuth{
 		Mail:    mailProvider,
 		Storage: storage,
@@ -111,7 +124,7 @@ func main() {
 		Addr:         ":8080",
 		ReadTimeout:  time.Minute,
 		WriteTimeout: time.Minute,
-		Handler:      router,
+		Handler:      http.MaxBytesHandler(router, 1<<20),
 	}
 	if err := server.ListenAndServe(); err != nil {
 		logrus.WithError(err).Fatal("listen and serve")
@@ -136,13 +149,11 @@ func (router *Router) setupDebugRoutes(kvstore kv.Store) {
 				logrus.WithError(err).Error("could not write to dump")
 				return
 			}
-			wr.WriteHeader(http.StatusOK)
 		case http.MethodPost:
 			if err := kv.RestoreFromDump(kvstore, req.Body); err != nil {
 				logrus.WithError(err).Error("could not restore from dump")
 				return
 			}
-			wr.WriteHeader(http.StatusOK)
 		}
 	}).Methods("GET", "POST")
 }
@@ -155,7 +166,10 @@ func (router *Router) setup() {
 	}
 
 	// setup talk routes
-	talksHandler := &handlers.Talks{Context: router.baseCtx, Storage: router.storage}
+	talksHandler := &handlers.Talks{
+		Context: router.baseCtx,
+		Storage: router.storage,
+	}
 	talksHandler.Setup(frontend)
 
 	// setup user session routes
