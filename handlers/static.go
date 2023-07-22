@@ -21,6 +21,7 @@ func (h Static) Setup(router *mux.Router) {
 func (Static) styles() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css")
+		w.Header().Set("Cache-Control", "max-age=86400")
 		w.Write(templates.TailwindStyles)
 	})
 }
@@ -28,12 +29,14 @@ func (Static) styles() http.Handler {
 func (Static) favicon() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "max-age=86400")
 		w.Write(templates.Favicon)
 	})
 }
 
 func (h Static) legal() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "max-age=86400")
 		if err := templates.Execute("legal.html", w, h.Context(w, r)); err != nil {
 			logrus.WithError(err).Error("Failed to execute template")
 			return
