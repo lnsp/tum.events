@@ -26,6 +26,7 @@ func (h API) talks() http.Handler {
 		Date     time.Time `json:"date"`
 		Link     string    `json:"link,omitempty"`
 		Body     string    `json:"body,omitempty"`
+		Image    string    `json:"image,omitempty"`
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		talks, err := h.Storage.UpcomingTalks()
@@ -44,6 +45,7 @@ func (h API) talks() http.Handler {
 				Date:     t.Date,
 				Link:     t.Link,
 				Body:     t.Body,
+				Image:    t.ImageURL,
 			}
 		}
 		if err := json.NewEncoder(w).Encode(apiTalks); err != nil {
