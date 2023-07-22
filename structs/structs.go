@@ -700,15 +700,19 @@ const (
 	jpegMimeType       = "image/jpeg"
 )
 
-func (storage *Storage) UploadImageWithName(objectName, imageBase64 string) error {
+func (storage *Storage) UploadImage(objectName, imageBase64 string) (string, error) {
+	// Object name is not allowed to be empty.
+	if objectName == "" {
+		objectName = imageKeyPrefix + uuid.NewString()
+	}
 	// Make sure that max(width, height) <= 1500px.
 	imageBytes, err := base64.StdEncoding.DecodeString(imageBase64)
 	if err != nil {
-		return err
+		return objectName, err
 	}
 	decodedImage, err := jpeg.Decode(bytes.NewReader(imageBytes))
 	if err != nil {
-		return err
+		return objectName, err
 	}
 	decodedImageBounds := decodedImage.Bounds()
 	targetWidth, targetHeight := float64(decodedImageBounds.Dx()), float64(decodedImageBounds.Dy())
@@ -725,15 +729,10 @@ func (storage *Storage) UploadImageWithName(objectName, imageBase64 string) erro
 	// Dump dst file into Cloudflare R2.
 	dstbuf := &bytes.Buffer{}
 	if err := jpeg.Encode(dstbuf, dst, &jpeg.Options{Quality: 85}); err != nil {
-		return err
+		return objectName, err
 	}
 	if err := storage.blob.Put(context.Background(), defaultBucketName, objectName, jpegMimeType, dstbuf); err != nil {
-		return err
+		return objectName, err
 	}
-	return nil
-}
-
-func (storage *Storage) UploadImage(imageBase64 string) (string, error) {
-	objectName := imageKeyPrefix + uuid.NewString()
-	return objectName, storage.UploadImageWithName(objectName, imageBase64)
+	return objectName, nil
 }

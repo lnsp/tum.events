@@ -187,12 +187,12 @@ func (h Talks) editForm() http.Handler {
 				templates.Context
 				Talk        *structs.Talk
 				Categories  []string
-				UploadImage bool
+				ImageUpload bool
 			}{
 				Context:     ac,
 				Talk:        talk,
 				Categories:  structs.TalkCategories,
-				UploadImage: canUploadImage,
+				ImageUpload: canUploadImage,
 			}
 			ctx.Error = errorMsg
 			if err := templates.Execute("edit.html", w, &ctx); err != nil {
@@ -264,13 +264,14 @@ func (h Talks) editForm() http.Handler {
 		}
 		talk.Date = date
 		// If image has been set, we'll need to upload it. To simplify things, we'll just overwrite the old one.
-		image := talk.Image
 		imageBase64 := r.Form.Get("image")
-		if imageBase64 != "" && !user.HasCapability(structs.CapabilityImageUploads) {
-			showError("You're not allowed to upload images.", http.StatusUnauthorized)
-			return
-		} else if imageBase64 != "" {
-			if err := h.Storage.UploadImageWithName(image, imageBase64); err != nil {
+		if imageBase64 != "" {
+			if !user.HasCapability(structs.CapabilityImageUploads) {
+				showError("You're not allowed to upload images.", http.StatusUnauthorized)
+				return
+			}
+			talk.Image, err = h.Storage.UploadImage(talk.Image, imageBase64)
+			if err != nil {
 				showError(genericErrorMessage, http.StatusInternalServerError)
 				logrus.WithError(err).Error("Failed to upload image")
 				return
@@ -449,12 +450,11 @@ func (h Talks) submitForm() http.Handler {
 			showError("You're not allowed to upload images.", http.StatusUnauthorized)
 			return
 		} else if imageBase64 != "" {
-			if key, err := h.Storage.UploadImage(imageBase64); err != nil {
+			image, err = h.Storage.UploadImage("", imageBase64)
+			if err != nil {
 				showError(genericErrorMessage, http.StatusInternalServerError)
 				logrus.WithError(err).Error("Failed to upload image")
 				return
-			} else {
-				image = key
 			}
 		}
 		// If user is authenticated, directly insert talk and redirect
