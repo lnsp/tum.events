@@ -48,5 +48,8 @@ deployment:
           value: Z5ktCnsqn+ONAPphE5K6TkkYUjL4sWbO3fVhIeAjboP53YSoW6lmkCVLN3vJRq55fMrE2glF5Uj4j/T7s3H1TIfxDskl8jvOH1vws35UORjuDNUlK7jtZAQTEHs=
           secret: true
         - key: R2_ACCESS_URL
-          value: https://4a7f738012695cb6cb78d8be54b399f4.r2.cloudflarestorage.com/tumevents
+          value: j1HwciS7JJp90IhcC6viwZVZYC7HrW2UHO+SR/slTY/MyOE0BXGePZwdbvJrsb1zoyWxwN0M9KOes8Cm6iOpxRoPz3I2qzXXUhkRwhi9wn3uxbdNuwhKEUkCDwk3
+          secret: true
+        - key: R2_PUBLIC_URL
+          value: https://cdn.tum.events
           secret: false
