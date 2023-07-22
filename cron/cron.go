@@ -25,7 +25,7 @@ func run() error {
 			Token:   os.Getenv("VALAR_TOKEN"),
 			Project: os.Getenv("VALAR_PROJECT"),
 		})
-	storage := structs.NewStorage(kvBackend, os.Getenv("VALAR_PREFIX"))
+	storage := structs.NewStorage(kvBackend, nil, os.Getenv("VALAR_PREFIX"))
 	talks, err := storage.Talks()
 	if err != nil {
 		return err
