@@ -2,16 +2,22 @@ package structs
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/lnsp/tum.events/blob"
 	"github.com/lnsp/tum.events/kv"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/sirupsen/logrus"
@@ -20,6 +26,7 @@ import (
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
 	"golang.org/x/exp/slices"
+	"golang.org/x/image/draw"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -111,6 +118,20 @@ type Talk struct {
 	Link       string    `json:"l,omitempty"`
 	LinkDomain string    `json:"-"`
 	Body       string    `json:"b,omitempty"`
+	Image      string    `json:"z,omitempty"`
+	ImageURL   string    `json:"-"`
+}
+
+func (t *Talk) deriveImageURL(blob blob.Store) error {
+	if t.Image == "" {
+		return nil
+	}
+	url, err := blob.PublicURL(defaultBucketName, t.Image)
+	if err != nil {
+		return err
+	}
+	t.ImageURL = url
+	return nil
 }
 
 func (t *Talk) deriveLinkDomain() error {
@@ -155,6 +176,7 @@ func (t *Talk) RenderAsHTML() string {
 
 // Storage provides capabilities to access and manage both user and individual post data.
 type Storage struct {
+	blob   blob.Store
 	kv     kv.Store
 	prefix string
 
@@ -164,10 +186,11 @@ type Storage struct {
 	hash     []byte
 }
 
-func NewStorage(backend kv.Store, prefix string) *Storage {
+func NewStorage(kv kv.Store, blob blob.Store, prefix string) *Storage {
 	return &Storage{
 		prefix: prefix,
-		kv:     backend,
+		kv:     kv,
+		blob:   blob,
 	}
 }
 
@@ -431,24 +454,32 @@ func (storage *Storage) DeleteTalk(ids ...int64) error {
 		idset[id] = struct{}{}
 	}
 
-	// Clear cache
+	// Clear cache and drop talk from cache.
 	storage.mu.Lock()
-	defer storage.mu.Unlock()
-
-	// Clear hash, drop talk from cache
 	storage.hash = nil
-
 	for id := range idset {
 		delete(storage.cachemap, id)
 	}
+	imgset := map[string]struct{}{}
 	i, j := 0, 0
 	for ; i < len(storage.cache); i++ {
 		if _, ok := idset[storage.cache[i].ID]; !ok {
 			storage.cache[j] = storage.cache[i]
 			j++
+		} else if storage.cache[i].Image != "" {
+			// As the talk will get wiped from storage, we'll also have to delete the associated image.
+			imgset[storage.cache[i].Image] = struct{}{}
 		}
 	}
 	storage.cache = storage.cache[:j]
+	storage.mu.Unlock()
+	// Now we can wipe the remaining image objects.
+	for key := range imgset {
+		if err := storage.blob.Delete(context.Background(), defaultBucketName, key); err != nil {
+			return fmt.Errorf("delete image: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -561,6 +592,7 @@ func (storage *Storage) updateCache(keys []string, hash []byte) error {
 					return fmt.Errorf("parse talk: %w", err)
 				}
 				talks[wqi.Index].deriveLinkDomain()
+				talks[wqi.Index].deriveImageURL(storage.blob)
 			}
 			return nil
 		})
@@ -648,14 +680,60 @@ func (storage *Storage) Talks() ([]*Talk, error) {
 	return slice, nil
 }
 
-func (storage *Storage) User(id string) (*User, error) {
+func (storage *Storage) User(id string) (User, error) {
 	userdata, err := storage.kv.Fetch(storage.prefix + "_users_" + id)
 	if err != nil {
-		return nil, err
+		return User{}, err
 	}
 	var user User
 	if err := json.Unmarshal(userdata, &user); err != nil {
-		return nil, err
+		return User{}, err
 	}
-	return &user, nil
+	return user, nil
+}
+
+const (
+	maxImageDimensions = 1500
+	jpegImageQuality   = 85
+	defaultBucketName  = "tumevents"
+	imageKeyPrefix     = "images/"
+	jpegMimeType       = "image/jpeg"
+)
+
+func (storage *Storage) UploadImageWithName(objectName, imageBase64 string) error {
+	// Make sure that max(width, height) <= 1500px.
+	imageBytes, err := base64.StdEncoding.DecodeString(imageBase64)
+	if err != nil {
+		return err
+	}
+	decodedImage, err := jpeg.Decode(bytes.NewReader(imageBytes))
+	if err != nil {
+		return err
+	}
+	decodedImageBounds := decodedImage.Bounds()
+	targetWidth, targetHeight := float64(decodedImageBounds.Dx()), float64(decodedImageBounds.Dy())
+	if targetWidth > maxImageDimensions && targetWidth >= targetHeight {
+		ratio := targetHeight / targetWidth
+		targetWidth, targetHeight = maxImageDimensions, ratio*maxImageDimensions
+	} else if targetHeight > maxImageDimensions && targetHeight >= targetWidth {
+		ratio := targetWidth / targetHeight
+		targetWidth, targetHeight = ratio*maxImageDimensions, maxImageDimensions
+	}
+	dstBounds := image.Rect(0, 0, int(targetWidth), int(targetHeight))
+	dst := image.NewRGBA(dstBounds)
+	draw.NearestNeighbor.Scale(dst, dstBounds, decodedImage, decodedImageBounds, draw.Over, nil)
+	// Dump dst file into Cloudflare R2.
+	dstbuf := &bytes.Buffer{}
+	if err := jpeg.Encode(dstbuf, dst, &jpeg.Options{Quality: 85}); err != nil {
+		return err
+	}
+	if err := storage.blob.Put(context.Background(), defaultBucketName, objectName, jpegMimeType, dstbuf); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (storage *Storage) UploadImage(imageBase64 string) (string, error) {
+	objectName := imageKeyPrefix + uuid.NewString()
+	return objectName, storage.UploadImageWithName(objectName, imageBase64)
 }
