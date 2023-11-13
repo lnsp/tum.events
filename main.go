@@ -31,6 +31,7 @@ var buildID string
 
 func main() {
 	// Setup nice logging
+	logrus.SetLevel(logrus.DebugLevel)
 	logrus.SetReportCaller(true)
 	logrus.SetFormatter(&logrus.TextFormatter{CallerPrettyfier: func(f *runtime.Frame) (string, string) {
 		return "", fmt.Sprintf("%s:%d", path.Base(f.File), f.Line)
