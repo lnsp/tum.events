@@ -53,3 +53,6 @@ deployment:
         - key: R2_PUBLIC_URL
           value: https://cdn.tum.events
           secret: false
+        - key: ROUTER_CSRFKEY
+          value: RO2HMeqEkot8rYg6N6wNGeGcQOOEXf0WnKoskP75U0QIzauKCn+vVBxDeeeukNct3O+i4hCZYXQ4dcOaAy29cynp0VrrPibTQHMLIPJG4NKUUA9H2O7y9qGwf/o=
+          secret: true
