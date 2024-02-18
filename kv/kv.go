@@ -140,7 +140,7 @@ type remoteStore struct {
 }
 
 func (store *remoteStore) AtomicInc(key string) (int64, error) {
-	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?op=inc&mode=atomic", store.Project, key)
+	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?op=inc", store.Project, key)
 	request, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return -1, err

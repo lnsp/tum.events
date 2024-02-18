@@ -77,6 +77,10 @@ type inMemoryStorage struct {
 	blobs     map[string][]byte
 }
 
+func WithInMemoryBackend(publicURL string) Store {
+	return &inMemoryStorage{publicURL: publicURL, blobs: map[string][]byte{}}
+}
+
 var _ Store = (*inMemoryStorage)(nil)
 
 func (memory *inMemoryStorage) PublicURL(bucket, name string) (string, error) {

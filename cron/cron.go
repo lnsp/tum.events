@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lnsp/tum.events/blob"
 	"github.com/lnsp/tum.events/kv"
 	"github.com/lnsp/tum.events/structs"
 	"github.com/mmcdole/gofeed"
@@ -25,7 +26,7 @@ func run() error {
 			Token:   os.Getenv("VALAR_TOKEN"),
 			Project: os.Getenv("VALAR_PROJECT"),
 		})
-	storage := structs.NewStorage(kvBackend, nil, os.Getenv("VALAR_PREFIX"))
+	storage := structs.NewStorage(kvBackend, blob.WithInMemoryBackend(""), os.Getenv("VALAR_PREFIX"))
 	talks, err := storage.Talks()
 	if err != nil {
 		return err
@@ -34,6 +35,7 @@ func run() error {
 	for _, t := range talks {
 		existingTalks[t.Link] = struct{}{}
 	}
+	fmt.Println("Existing:", existingTalks)
 
 	// fetch talk data
 	fp := gofeed.NewParser()
@@ -68,6 +70,7 @@ func run() error {
 				Date:     published,
 				Link:     item.Link,
 			}
+			fmt.Println(talk)
 			// to be considered the same, both title and url must be the same
 			if _, ok := existingTalks[talk.Link]; ok {
 				continue
