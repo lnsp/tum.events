@@ -30,6 +30,7 @@ type Talks struct {
 func (h Talks) Setup(router *mux.Router) {
 	router.Handle("/", h.top()).Methods("GET")
 	router.Handle("/top", h.top()).Methods("GET")
+	router.Handle("/nextup", h.downloadUpcomingTalks()).Methods("GET").Queries("format", "ics")
 	router.Handle("/nextup", h.nextup()).Methods("GET")
 	router.Handle("/filter", h.filter()).Methods("GET")
 	router.Handle("/categories", h.categories()).Methods("GET")
@@ -318,6 +319,34 @@ func (h Talks) downloadTalk() http.Handler {
 		// Write out as download
 		contentDisposition := fmt.Sprintf("attachment; filename=\"tumevent%d.ics\"", talk.ID)
 		w.Header().Set("Content-Disposition", contentDisposition)
+		cal.SerializeTo(w)
+	})
+}
+
+func (h Talks) downloadUpcomingTalks() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upcoming, err := h.Storage.UpcomingTalks()
+		if err != nil {
+			http.Error(w, "could not fetch upcoming talks", http.StatusInternalServerError)
+			logrus.WithError(err).Error("failed to fetch upcoming talks")
+			return
+		}
+
+		// Encode talks as ICS
+		cal := ics.NewCalendar()
+		cal.SetMethod(ics.MethodPublish)
+		for _, talk := range upcoming {
+			event := cal.AddEvent(fmt.Sprintf("%d@tum.events", talk.ID))
+			event.SetCreatedTime(time.Now())
+			event.SetStartAt(talk.Date)
+			event.SetEndAt(talk.Date.Add(time.Hour))
+			event.SetSummary(talk.Title)
+			event.SetDescription(talk.RenderAsHTML())
+			event.SetURL(talk.Link)
+		}
+
+		// Write out as download
+		w.Header().Set("Content-Type", "text/calendar")
 		cal.SerializeTo(w)
 	})
 }
