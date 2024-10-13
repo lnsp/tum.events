@@ -139,6 +139,14 @@ type remoteStore struct {
 	httpClient *http.Client
 }
 
+type statusNoOKError struct {
+	StatusCode int
+}
+
+func (e *statusNoOKError) Error() string {
+	return fmt.Sprintf("status should be OK, but got %s", http.StatusText(e.StatusCode))
+}
+
 func (store *remoteStore) AtomicInc(key string) (int64, error) {
 	url := fmt.Sprintf("https://kv.valar.dev/%s/%s?op=inc", store.Project, key)
 	request, err := http.NewRequest(http.MethodPost, url, nil)
@@ -172,6 +180,9 @@ func (store *remoteStore) Delete(key string) error {
 		return err
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return &statusNoOKError{response.StatusCode}
+	}
 	return nil
 }
 
@@ -188,6 +199,9 @@ func (store *remoteStore) Put(key string, value []byte) error {
 		return err
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return &statusNoOKError{response.StatusCode}
+	}
 	return nil
 }
 
@@ -203,6 +217,9 @@ func (store *remoteStore) Fetch(key string) ([]byte, error) {
 		return nil, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, &statusNoOKError{response.StatusCode}
+	}
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, err
