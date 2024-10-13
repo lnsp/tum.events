@@ -49,6 +49,7 @@ func run() error {
 	for _, t := range talks {
 		existingTalks[t.Link] = struct{}{}
 	}
+	log.Println("Stored", len(existingTalks), "existing talks")
 
 	srcs := []TalkSource{TUMuchData{}, NetInTum{}}
 	scraped := []*structs.Talk{}
@@ -73,8 +74,10 @@ func run() error {
 			if err := storage.InsertTalk(talk); err != nil {
 				return err
 			}
+			log.Println("Inserted talk", talk.Title)
+		} else {
+			log.Printf("Detected talk %#v\n", talk)
 		}
-		fmt.Println("Inserted talk", talk.Title)
 		count++
 	}
 
