@@ -3,17 +3,22 @@
 
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="/styles.css">
-  <link rel="icon" type="image/png" href="/favicon.png">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1">
+  <link rel="stylesheet"
+        href="/styles.css">
+  <link rel="icon"
+        type="image/png"
+        href="/favicon.png">
   <title>{{ template "title" . }}</title>
-  <script defer src="//unpkg.com/alpinejs"></script>
+  <script defer
+          src="//unpkg.com/alpinejs"></script>
 </head>
 
 <body class="max-w-5xl mx-auto sm:px-2">
   <div class="sm:mt-2 m-auto bg-gray-100">
-    <nav class="bg-blue-100 flex justify-between p-1 sm:p-2">
-      <div class="flex gap-2 items-center">
+    <nav class="bg-blue-100 flex flex-wrap justify-between p-1 sm:p-2 relative">
+      <div class="flex gap-2 items-center w-full sm:w-auto">
         <a href="/">
           <span class="inline-block w-5 h-5 text-sm bg-blue-600 text-center text-white font-bold">T</span>
         </a>
@@ -32,13 +37,15 @@
           </div>
         </div>
       </div>
-      <div class="flex gap-1 whitespace-nowrap text-xs flex-wrap items-end sm:text-sm sm:items-center">
+      <div
+           class="flex flex-row gap-1 whitespace-nowrap text-xs items-end sm:text-sm sm:items-center pl-7 pt-1 sm:pl-0 sm:pt-0 text-gray-600">
         <a href="/nextup?format=ics">subscribe</a>
         <span>|</span>
         {{ if .Login }}
         <a href="/profile">{{ .Login }}</a>
         <span>|</span>
-        <form action="/logout" method="POST">
+        <form action="/logout"
+              method="POST">
           {{ .CSRFToken }}
           <button role="submit">logout</button>
         </form>
@@ -49,14 +56,16 @@
     </nav>
     {{ template "content" . }}
   </div>
-  <div class="flex justify-center text-xs text-gray-400 gap-4 mt-4">
-    <a href="/legal" class="hover:underline">
+  <div class="flex justify-center text-xs text-gray-400 gap-4 mt-4 px-2">
+    <a href="/legal"
+       class="hover:underline text-center">
       disclaimer &amp; imprint
     </a>
     <span>|</span>
-    <a href="https://valar.dev" class="hover:underline hover:text-gray-600">hosted on valar</a>
+    <a href="https://valar.dev"
+       class="hover:underline text-center">hosted on valar</a>
     <span>|</span>
-    <span>release {{ .Build }}</span>
+    <span class="text-center">release {{ .Build }}</span>
   </div>
 </body>
 
